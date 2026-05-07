@@ -2,11 +2,9 @@
  * 桥接服务主逻辑
  * 连接飞书 WebSocket ↔ pi AgentSession
  *
- * 飞书消息支持的命令:
- *   /new      - 重建会话（清空上下文）
- *   /stop     - 中止当前处理（不丢失上下文）
- *   /compact  - 压缩上下文（节省 token）
- *   /help     - 查看帮助
+ * 飞书消息通过表情反应 (Reaction) 标记状态:
+ *   👀 处理中  →  ✅ 完成  /  ❌ 错误
+ * 命令回复使用文本消息。
  */
 
 import { createServer } from "node:http";
@@ -66,8 +64,9 @@ export class BridgeServer {
     console.log(`   模型: ${config.model}`);
     console.log(`   超时: ${config.timeout / 1000}s`);
     console.log("");
-    console.log("   给飞书机器人发消息即可开始对话！");
-    console.log("   命令: /new(重建)  /stop(中止)  /compact(压缩)  /help(帮助)");
+    console.log("   发送消息给机器人，通过表情反应查看状态:");
+    console.log("   👀 处理中 → ✅ 完成 / ❌ 错误");
+    console.log("   命令: /new /stop /compact /help (文本回复)");
   }
 
   private async handleMessage(source: FeishuSource, text: string) {
@@ -82,84 +81,57 @@ export class BridgeServer {
 
     const cmd = text.trim().toLowerCase();
 
-    // ─── /new ──────────────────────────────────────────────
+    // ─── 命令：文本回复 ────────────────────────────────────
     if (cmd === "/new") {
       const r = await this.sessionManager.resetSession(sessionKey);
-      await this.feishu.replyMarkdown(source,
-        r.success ? "✅ 会话已重置，上下文已清空。" : `❌ 重置失败: ${r.error}`
-      );
+      await this.feishu.replyMarkdown(source, r.success ? "✅ 会话已重置" : `❌ 重置失败: ${r.error}`);
       return;
     }
-
-    // ─── /stop ─────────────────────────────────────────────
     if (cmd === "/stop") {
       const aborted = this.sessionManager.abortProcessing(sessionKey);
-      await this.feishu.replyMarkdown(source,
-        aborted ? "⏹ 已中止，上下文未丢失。" : "ℹ️ 当前没有正在处理的任务。"
-      );
+      await this.feishu.replyMarkdown(source, aborted ? "⏹ 已中止" : "ℹ️ 无处理中的任务");
       return;
     }
-
-    // ─── /compact ──────────────────────────────────────────
     if (cmd === "/compact") {
       await this.sessionManager.getOrCreate(sessionKey, source.chatId);
-      await this.feishu.replyMarkdown(source, "🗜️ 正在压缩上下文...");
       const r = await this.sessionManager.compactSession(sessionKey);
-      await this.feishu.replyMarkdown(source,
-        r.success ? "✅ 上下文已压缩，可继续对话。" : `❌ 压缩失败: ${r.error}`
-      );
+      await this.feishu.replyMarkdown(source, r.success ? "✅ 上下文已压缩" : `❌ 压缩失败: ${r.error}`);
       return;
     }
-
-    // ─── /help ─────────────────────────────────────────────
     if (cmd === "/help") {
       const p = readPromptFile();
       const m = readMemoryFile();
       await this.feishu.replyMarkdown(source,
         "**飞书桥接使用帮助**\n\n" +
-        "直接发送消息即可与 pi 编码助手对话。\n\n" +
+        "发送消息给机器人，通过表情反应查看状态：\n" +
+        "  👀 处理中 → ✅ 完成 / ❌ 错误\n\n" +
         "**命令:**\n" +
-        "  /new     重建会话，清空上下文\n" +
-        "  /stop    中止当前处理（上下文保留）\n" +
-        "  /compact 压缩上下文，释放 token\n" +
-        "  /help    显示此帮助\n\n" +
-        "**提示词:** " + (p ? `✅ 已加载 (${p.length} 字符)` : "❌ 未设置") + "\n" +
-        "**记忆文件:** " + (m ? `✅ 已加载 (${m.length} 字符)` : "❌ 未设置") + "\n\n" +
-        "提示: 上下文满时可发 /compact 或 /new\n群聊中需 @机器人 才会响应"
+        "  /new     重建会话\n  /stop    中止处理\n" +
+        "  /compact 压缩上下文\n  /help    帮助\n\n" +
+        "提示词: " + (p ? `✅` : "❌") + "\n" +
+        "记忆:   " + (m ? `✅` : "❌")
       );
       return;
     }
 
-    // ─── 普通消息 ──────────────────────────────────────────
+    // ─── 普通消息：用 Reaction 标记状态 ────────────────────
     const session = await this.sessionManager.getOrCreate(sessionKey, source.chatId);
     const enrichedText = this.sessionManager.buildMessage(text);
 
-    // 流式回复（自动以"正在思考"开头，收到真实内容后替换）
-    const stream = await this.feishu.streamMarkdown(source);
-    let hasOutput = false;
+    // 👀 标记处理中
+    await this.feishu.markProcessing(source.messageId);
 
     await this.sessionManager.prompt(session, enrichedText, {
-      onDelta: async (delta: string) => {
-        if (!hasOutput) {
-          await stream.setContent(delta);
-          hasOutput = true;
-        } else {
-          await stream.append(delta);
-        }
-      },
+      onDelta: () => { /* 不需要流式回复 */ },
       onDone: async () => {
-        if (!hasOutput) {
-          await stream.setContent("✅ 处理完成。");
-        }
-        console.log(`[完成] 回复完成`);
+        // ✅ 标记完成
+        await this.feishu.markDone(source.messageId);
+        console.log(`[完成] ${source.senderName}: ${text.slice(0, 40)}`);
       },
       onError: async (err: string) => {
+        // ❌ 标记错误
         console.error(`[错误] ${err}`);
-        if (!hasOutput) {
-          await stream.setContent(err);
-        } else {
-          await stream.append(`\n\n---\n${err}`);
-        }
+        await this.feishu.markError(source.messageId);
       },
     }, sessionKey);
   }

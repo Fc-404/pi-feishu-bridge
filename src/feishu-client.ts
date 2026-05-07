@@ -4,20 +4,13 @@
  */
 
 import { LarkChannel } from "@larksuiteoapi/node-sdk";
-import type { MarkdownStreamController, NormalizedMessage } from "@larksuiteoapi/node-sdk";
+import type { NormalizedMessage } from "@larksuiteoapi/node-sdk";
 import type { BridgeConfig } from "./config.js";
 import type { FeishuSource } from "./types.js";
 
 /** 飞书消息回调 */
 export interface FeishuMessageHandler {
   (source: FeishuSource, text: string): Promise<void>;
-}
-
-/** 流式回复控制器 */
-export interface StreamReplyController {
-  append(text: string): Promise<void>;
-  setContent(full: string): Promise<void>;
-  messageId: string;
 }
 
 export class FeishuClient {
@@ -79,6 +72,27 @@ export class FeishuClient {
     console.log("[飞书] WebSocket 事件订阅已连接");
   }
 
+  // ─── 表情反应 (Reaction) 状态标记 ─────────────────────
+
+  /** 标记"正在处理" 👀 */
+  async markProcessing(messageId: string): Promise<void> {
+    try { await this.channel.addReaction(messageId, "eyes"); } catch { /* ignore */ }
+  }
+
+  /** 标记"完成" ✅，并清除处理标记 */
+  async markDone(messageId: string): Promise<void> {
+    try { await this.channel.removeReactionByEmoji(messageId, "eyes"); } catch { /* ignore */ }
+    try { await this.channel.addReaction(messageId, "white_check_mark"); } catch { /* ignore */ }
+  }
+
+  /** 标记"错误" ❌，并清除处理标记 */
+  async markError(messageId: string): Promise<void> {
+    try { await this.channel.removeReactionByEmoji(messageId, "eyes"); } catch { /* ignore */ }
+    try { await this.channel.addReaction(messageId, "x"); } catch { /* ignore */ }
+  }
+
+  // ─── 文本回复（仅 `/new` `/help` 等命令使用） ─────────
+
   /** 回复文本消息（关联到原消息） */
   async replyText(source: FeishuSource, text: string): Promise<string | undefined> {
     try {
@@ -97,44 +111,6 @@ export class FeishuClient {
       return r.messageId;
     } catch (err) {
       console.error("[飞书] 发送 Markdown 失败:", err);
-      return undefined;
-    }
-  }
-
-  /**
-   * 启动 Markdown 流式回复（关联到原消息）
-   * 以"正在思考"开始，收到内容后替换
-   */
-  async streamMarkdown(source: FeishuSource): Promise<StreamReplyController> {
-    let ctrl: StreamReplyController | null = null;
-
-    this.channel.stream(
-      source.chatId,
-      {
-        markdown: async (mc: MarkdownStreamController) => {
-          // 立即显示"正在思考"
-          await mc.append("🤔 **正在思考...**\n\n");
-          ctrl = {
-            append: (t: string) => mc.append(t),
-            setContent: (t: string) => mc.setContent(t),
-            messageId: mc.messageId,
-          };
-        },
-      },
-      { replyTo: source.messageId },
-    );
-
-    while (!ctrl) await new Promise((r) => setImmediate(r));
-    return ctrl;
-  }
-
-  /** 发送交互卡片 */
-  async sendCard(source: FeishuSource, card: object): Promise<string | undefined> {
-    try {
-      const r = await this.channel.send(source.chatId, { card }, { replyTo: source.messageId });
-      return r.messageId;
-    } catch (err) {
-      console.error("[飞书] 发送卡片失败:", err);
       return undefined;
     }
   }
