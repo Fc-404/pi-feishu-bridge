@@ -10,7 +10,6 @@ import {
   SessionManager,
   AuthStorage,
   ModelRegistry,
-  createCodingTools,
 } from "@mariozechner/pi-coding-agent";
 import type { AgentSession } from "@mariozechner/pi-coding-agent";
 import { mkdirSync, unlinkSync, existsSync, readFileSync, writeFileSync } from "node:fs";
@@ -129,12 +128,16 @@ export class PiSessionManager {
       this.sessions.delete(sessionKey);
     }
 
+    // 等待文件句柄释放
     const sessionFile = join(this.config.sessionsDir, `${sessionKey}.jsonl`);
-    if (existsSync(sessionFile)) {
+    for (let i = 0; i < 5; i++) {
+      if (!existsSync(sessionFile)) break;
       try {
         unlinkSync(sessionFile);
+        break;
       } catch {
-        return { success: false, error: "无法删除旧会话文件" };
+        if (i < 4) await new Promise((r) => setTimeout(r, 100));
+        else return { success: false, error: "无法删除旧会话文件，请稍后重试" };
       }
     }
     return { success: true };
@@ -260,7 +263,7 @@ export class PiSessionManager {
       sessionManager: SessionManager.open(sessionFile),
       authStorage: this.authStorage,
       modelRegistry: this.modelRegistry,
-      tools: createCodingTools(workDir) as any,
+      tools: ["read", "bash", "edit", "write", "grep", "find", "ls"],
     });
 
     return session;
