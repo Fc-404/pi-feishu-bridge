@@ -46,9 +46,7 @@ export class FeishuClient {
       appId: this.config.feishuAppId,
       appSecret: this.config.feishuAppSecret,
       loggerLevel: this.config.logLevel === "debug" ? 0 : 1,
-      policy: {
-        requireMention: true,
-      },
+      policy: { requireMention: true },
     });
 
     this.channel.on("message", async (msg: NormalizedMessage) => {
@@ -57,6 +55,7 @@ export class FeishuClient {
         if (!text) return;
 
         const cleanText = this.stripBotMention(text, msg.mentions);
+        if (!cleanText) return;
 
         const source: FeishuSource = {
           messageId: msg.messageId,
@@ -72,44 +71,30 @@ export class FeishuClient {
       }
     });
 
-    this.channel.on("reconnecting", () => {
-      console.log("[飞书] WebSocket 正在重连...");
-    });
-
-    this.channel.on("reconnected", () => {
-      console.log("[飞书] WebSocket 重连成功");
-    });
-
-    this.channel.on("error", (err) => {
-      console.error("[飞书] 连接错误:", err.message);
-    });
+    this.channel.on("reconnecting", () => console.log("[飞书] WebSocket 正在重连..."));
+    this.channel.on("reconnected", () => console.log("[飞书] WebSocket 重连成功"));
+    this.channel.on("error", (err) => console.error("[飞书] 连接错误:", err.message));
 
     await this.channel.connect();
     console.log("[飞书] WebSocket 事件订阅已连接");
   }
 
-  /** 快速回复文本消息 */
-  async replyText(
-    source: FeishuSource,
-    text: string,
-  ): Promise<string | undefined> {
+  /** 回复文本消息（关联到原消息） */
+  async replyText(source: FeishuSource, text: string): Promise<string | undefined> {
     try {
-      const result = await this.channel.send(source.chatId, { text });
-      return result.messageId;
+      const r = await this.channel.send(source.chatId, { text }, { replyTo: source.messageId });
+      return r.messageId;
     } catch (err) {
-      console.error("[飞书] 发送消息失败:", err);
+      console.error("[飞书] 发送文本失败:", err);
       return undefined;
     }
   }
 
-  /** 回复 Markdown 消息 */
-  async replyMarkdown(
-    source: FeishuSource,
-    markdown: string,
-  ): Promise<string | undefined> {
+  /** 回复 Markdown 消息（关联到原消息） */
+  async replyMarkdown(source: FeishuSource, markdown: string): Promise<string | undefined> {
     try {
-      const result = await this.channel.send(source.chatId, { markdown });
-      return result.messageId;
+      const r = await this.channel.send(source.chatId, { markdown }, { replyTo: source.messageId });
+      return r.messageId;
     } catch (err) {
       console.error("[飞书] 发送 Markdown 失败:", err);
       return undefined;
@@ -117,67 +102,54 @@ export class FeishuClient {
   }
 
   /**
-   * 启动 Markdown 流式回复
-   * 返回控制器，可在后续持续追加内容
+   * 启动 Markdown 流式回复（关联到原消息）
+   * 以"正在思考"开始，收到内容后替换
    */
-  async streamMarkdown(
-    chatId: string,
-  ): Promise<StreamReplyController> {
-    let externalController: StreamReplyController | null = null;
+  async streamMarkdown(source: FeishuSource): Promise<StreamReplyController> {
+    let ctrl: StreamReplyController | null = null;
 
-    // stream 方法内部的 producer 会在连接建立后立即调用
-    // 但我们需要在外部的 await 之后拿到 controller
-    const streamPromise = this.channel.stream(chatId, {
-      markdown: async (ctrl: MarkdownStreamController) => {
-        externalController = {
-          append: (text: string) => ctrl.append(text),
-          setContent: (full: string) => ctrl.setContent(full),
-          messageId: ctrl.messageId,
-        };
+    this.channel.stream(
+      source.chatId,
+      {
+        markdown: async (mc: MarkdownStreamController) => {
+          // 立即显示"正在思考"
+          await mc.append("🤔 **正在思考...**\n\n");
+          ctrl = {
+            append: (t: string) => mc.append(t),
+            setContent: (t: string) => mc.setContent(t),
+            messageId: mc.messageId,
+          };
+        },
       },
-    });
+      { replyTo: source.messageId },
+    );
 
-    // 等待 controller 就绪
-    while (!externalController) {
-      await new Promise((r) => setImmediate(r));
-    }
-
-    return externalController;
+    while (!ctrl) await new Promise((r) => setImmediate(r));
+    return ctrl;
   }
 
   /** 发送交互卡片 */
-  async sendCard(
-    chatId: string,
-    card: object,
-  ): Promise<string | undefined> {
+  async sendCard(source: FeishuSource, card: object): Promise<string | undefined> {
     try {
-      const result = await this.channel.send(chatId, { card });
-      return result.messageId;
+      const r = await this.channel.send(source.chatId, { card }, { replyTo: source.messageId });
+      return r.messageId;
     } catch (err) {
       console.error("[飞书] 发送卡片失败:", err);
       return undefined;
     }
   }
 
-  /** 停止连接 */
   async stop(): Promise<void> {
     if (this.channel) {
-      try {
-        await this.channel.disconnect();
-      } catch {
-        // ignore
-      }
+      try { await this.channel.disconnect(); } catch { /* ignore */ }
     }
     console.log("[飞书] 桥接服务已断开");
   }
 
-  /** 去掉消息中的 @bot 标签 */
   private stripBotMention(text: string, mentions: NormalizedMessage["mentions"]): string {
     if (!mentions?.length) return text;
-    for (const mention of mentions) {
-      if (mention.isBot && mention.name) {
-        text = text.replace(`@${mention.name}`, "").trim();
-      }
+    for (const m of mentions) {
+      if (m.isBot && m.name) text = text.replace(`@${m.name}`, "").trim();
     }
     return text.trim();
   }

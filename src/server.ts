@@ -12,7 +12,7 @@
 import { createServer } from "node:http";
 import type { BridgeConfig } from "./config.js";
 import { FeishuClient } from "./feishu-client.js";
-import { PiSessionManager, readPromptFile, readMemoryFile, writeMemoryFile } from "./session-manager.js";
+import { PiSessionManager, readPromptFile, readMemoryFile } from "./session-manager.js";
 import type { FeishuSource } from "./types.js";
 
 export class BridgeServer {
@@ -23,7 +23,6 @@ export class BridgeServer {
   constructor(private config: BridgeConfig) {
     this.feishu = new FeishuClient(config);
     this.sessionManager = new PiSessionManager(config);
-
     this.feishu.onMessage((source, text) => this.handleMessage(source, text));
 
     this.httpServer = createServer((req, res) => {
@@ -57,7 +56,6 @@ export class BridgeServer {
 
     this.registerShutdown();
 
-    // 启动时提示提示词/记忆文件
     const prompt = readPromptFile();
     const memory = readMemoryFile();
     if (prompt) console.log(`[提示词] 已加载 (${prompt.length} 字符)`);
@@ -84,97 +82,83 @@ export class BridgeServer {
 
     const cmd = text.trim().toLowerCase();
 
-    // ─── /new: 重建会话 ────────────────────────────────────
+    // ─── /new ──────────────────────────────────────────────
     if (cmd === "/new") {
-      const result = await this.sessionManager.resetSession(sessionKey);
+      const r = await this.sessionManager.resetSession(sessionKey);
       await this.feishu.replyMarkdown(source,
-        result.success
-          ? "✅ **会话已重置**，上下文已清空。可以开始新的对话了。"
-          : `❌ **重置失败**: ${result.error}`
+        r.success ? "✅ 会话已重置，上下文已清空。" : `❌ 重置失败: ${r.error}`
       );
       return;
     }
 
-    // ─── /stop: 仅中止，不清除上下文 ───────────────────────
+    // ─── /stop ─────────────────────────────────────────────
     if (cmd === "/stop") {
       const aborted = this.sessionManager.abortProcessing(sessionKey);
       await this.feishu.replyMarkdown(source,
-        aborted
-          ? "⏹ **已中止**，上下文未丢失，可以继续发送消息。"
-          : "ℹ️ 当前没有正在处理的任务。"
+        aborted ? "⏹ 已中止，上下文未丢失。" : "ℹ️ 当前没有正在处理的任务。"
       );
       return;
     }
 
-    // ─── /compact: 压缩上下文 ──────────────────────────────
+    // ─── /compact ──────────────────────────────────────────
     if (cmd === "/compact") {
-      // 先确保 session 存在
       await this.sessionManager.getOrCreate(sessionKey, source.chatId);
-      await this.feishu.replyMarkdown(source, "🗜️ **正在压缩上下文...**");
-      const result = await this.sessionManager.compactSession(sessionKey);
+      await this.feishu.replyMarkdown(source, "🗜️ 正在压缩上下文...");
+      const r = await this.sessionManager.compactSession(sessionKey);
       await this.feishu.replyMarkdown(source,
-        result.success
-          ? "✅ **上下文已压缩**，释放了 token 空间，可继续对话。"
-          : `❌ **压缩失败**: ${result.error}`
+        r.success ? "✅ 上下文已压缩，可继续对话。" : `❌ 压缩失败: ${r.error}`
       );
       return;
     }
 
-    // ─── /help: 帮助 ───────────────────────────────────────
+    // ─── /help ─────────────────────────────────────────────
     if (cmd === "/help") {
-      const prompt = readPromptFile();
-      const memory = readMemoryFile();
+      const p = readPromptFile();
+      const m = readMemoryFile();
       await this.feishu.replyMarkdown(source,
-        "🤖 **飞书桥接使用帮助**\n\n" +
+        "**飞书桥接使用帮助**\n\n" +
         "直接发送消息即可与 pi 编码助手对话。\n\n" +
         "**命令:**\n" +
-        "  `/new`     重建会话，清空上下文\n" +
-        "  `/stop`    中止当前处理（上下文保留）\n" +
-        "  `/compact` 压缩上下文，释放 token\n" +
-        "  `/help`    显示此帮助\n\n" +
-        "**提示词:** " + (prompt ? `✅ 已加载 (${prompt.length} 字符)` : "❌ 未设置") + "\n" +
-        "  - 编辑 .pi/feishu-prompt.md 可设置机器人行为\n\n" +
-        "**记忆文件:** " + (memory ? `✅ 已加载 (${memory.length} 字符)` : "❌ 未设置") + "\n" +
-        "  - 编辑 .pi/feishu-memory.md 可持久化记忆\n" +
-        "  - 也可以让机器人帮你读写记忆文件\n\n" +
-        "**提示:**\n" +
-        "  - 上下文满时可发 /compact 或 /new\n" +
-        "  - 群聊中需 @机器人 才会响应"
+        "  /new     重建会话，清空上下文\n" +
+        "  /stop    中止当前处理（上下文保留）\n" +
+        "  /compact 压缩上下文，释放 token\n" +
+        "  /help    显示此帮助\n\n" +
+        "**提示词:** " + (p ? `✅ 已加载 (${p.length} 字符)` : "❌ 未设置") + "\n" +
+        "**记忆文件:** " + (m ? `✅ 已加载 (${m.length} 字符)` : "❌ 未设置") + "\n\n" +
+        "提示: 上下文满时可发 /compact 或 /new\n群聊中需 @机器人 才会响应"
       );
       return;
     }
 
-    // ─── 处理普通消息 ──────────────────────────────────────
+    // ─── 普通消息 ──────────────────────────────────────────
     const session = await this.sessionManager.getOrCreate(sessionKey, source.chatId);
-
-    // 注入提示词 + 记忆
     const enrichedText = this.sessionManager.buildMessage(text);
 
-    await this.feishu.replyMarkdown(source, "🤔 **正在思考...**");
-
-    let streamController = await this.feishu.streamMarkdown(source.chatId);
+    // 流式回复（自动以"正在思考"开头，收到真实内容后替换）
+    const stream = await this.feishu.streamMarkdown(source);
     let hasOutput = false;
 
     await this.sessionManager.prompt(session, enrichedText, {
       onDelta: async (delta: string) => {
         if (!hasOutput) {
-          await streamController.setContent("");
+          await stream.setContent(delta);
           hasOutput = true;
+        } else {
+          await stream.append(delta);
         }
-        await streamController.append(delta);
       },
       onDone: async () => {
         if (!hasOutput) {
-          await streamController.setContent("✅ **处理完成。**");
+          await stream.setContent("✅ 处理完成。");
         }
         console.log(`[完成] 回复完成`);
       },
       onError: async (err: string) => {
         console.error(`[错误] ${err}`);
         if (!hasOutput) {
-          await streamController.setContent(err);
+          await stream.setContent(err);
         } else {
-          await streamController.append(`\n\n---\n${err}`);
+          await stream.append(`\n\n---\n${err}`);
         }
       },
     }, sessionKey);
