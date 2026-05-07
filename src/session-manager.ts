@@ -26,11 +26,6 @@ export interface SessionEntry {
   abortCurrent?: () => void;
 }
 
-/** 获取 session 文件路径 */
-export function sessionFileFor(sessionsDir: string, sessionKey: string): string {
-  return join(sessionsDir, `${sessionKey}.jsonl`);
-}
-
 /** 提示词文件和记忆文件的路径 */
 function getDataFiles() {
   const dir = resolve(".pi");

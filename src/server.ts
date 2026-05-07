@@ -3,15 +3,13 @@
  * 连接飞书 WebSocket ↔ pi AgentSession
  *
  * 飞书消息通过简短文本回复标记状态:
- *   👀 → ✅ 完成 / ❌ 错误
- * 命令回复使用完整文本。
+ *   👀 → [AI 回复] → ✅ 完成 (含用量统计)
  */
 
 import { createServer } from "node:http";
 import type { BridgeConfig } from "./config.js";
 import { FeishuClient } from "./feishu-client.js";
-import { PiSessionManager, readPromptFile, readMemoryFile, sessionFileFor } from "./session-manager.js";
-import { getSessionStats, formatUsageLine } from "./cost-tracker.js";
+import { PiSessionManager, readPromptFile, readMemoryFile } from "./session-manager.js";
 import type { FeishuSource } from "./types.js";
 
 export class BridgeServer {
@@ -59,13 +57,10 @@ export class BridgeServer {
     const memory = readMemoryFile();
     if (prompt) console.log(`[提示词] 已加载 (${prompt.length} 字符)`);
     if (memory) console.log(`[记忆]   已加载 (${memory.length} 字符)`);
-    console.log(`[文件]   .pi/feishu-prompt.md  .pi/feishu-memory.md`);
 
     console.log("\n✅ 飞书 ↔ pi 桥接服务已启动");
     console.log(`   模型: ${config.model}`);
     console.log(`   超时: ${config.timeout / 1000}s`);
-    console.log("");
-    console.log("   发送消息给机器人，收到 👀 即开始处理，完成后返回 ✅");
     console.log("   命令: /new /stop /compact /help");
   }
 
@@ -81,7 +76,7 @@ export class BridgeServer {
 
     const cmd = text.trim().toLowerCase();
 
-    // ─── 命令：文本回复 ────────────────────────────────────
+    // ─── 命令 ──────────────────────────────────────────────
     if (cmd === "/new") {
       const r = await this.sessionManager.resetSession(sessionKey);
       await this.feishu.replyMarkdown(source, r.success ? "✅ 会话已重置" : `❌ 重置失败: ${r.error}`);
@@ -103,41 +98,35 @@ export class BridgeServer {
       const m = readMemoryFile();
       await this.feishu.replyMarkdown(source,
         "**飞书桥接使用帮助**\n\n" +
-        "发送消息后机器人会回复 👀 开始处理\n" +
-        "完成后回复 ✅ 或 ❌\n\n" +
-        "**命令:**\n" +
-        "  /new     重建会话\n  /stop    中止处理\n" +
-        "  /compact 压缩上下文\n  /help    帮助\n\n" +
-        "提示词: " + (p ? `✅` : "❌") + "\n" +
-        "记忆:   " + (m ? `✅` : "❌")
+        "发送消息给机器人即可对话。\n\n" +
+        "**命令:**\n  /new /stop /compact /help\n\n" +
+        "提示词: " + (p ? "✅" : "❌") + "\n记忆:   " + (m ? "✅" : "❌")
       );
       return;
     }
 
-    // ─── 普通消息：用 Reaction 标记状态 ────────────────────
+    // ─── 普通消息 ──────────────────────────────────────────
     const session = await this.sessionManager.getOrCreate(sessionKey, source.chatId);
     const enrichedText = this.sessionManager.buildMessage(text);
 
-    // 回复 👀 表示开始处理
+    // 👀 开始处理
     await this.feishu.replyProcessing(source);
 
-    // 收集 AI 回复内容
+    // 收集 AI 回复
     let replyContent = "";
 
     await this.sessionManager.prompt(session, enrichedText, {
-      onDelta: (delta: string) => {
-        replyContent += delta;
-      },
+      onDelta: (delta: string) => { replyContent += delta; },
       onDone: async () => {
-        // 构建回复：内容 + 用量统计
-        const sessionFile = sessionFileFor(this.config.sessionsDir, sessionKey);
-        const stats = getSessionStats(sessionFile);
-        const usageLine = formatUsageLine(stats.total, stats.today);
-
+        // 先发 AI 回复内容
         if (replyContent) {
-          await this.feishu.replyMarkdown(source, replyContent + `\n\n---\n${usageLine}`);
+          await this.feishu.replyMarkdown(source, replyContent);
         }
-        await this.feishu.replyDone(source);
+
+        // 从 session 取用量统计，放 ✅ 消息里
+        const usageLine = getUsageLine(session);
+        await this.feishu.replyMarkdown(source, `✅ 完成  ${usageLine || ""}`);
+
         console.log(`[完成] ${source.senderName}: ${text.slice(0, 40)}`);
       },
       onError: async (err: string) => {
@@ -162,4 +151,32 @@ export class BridgeServer {
     process.on("SIGINT", shutdown);
     process.on("SIGTERM", shutdown);
   }
+}
+
+/** 从 session 最近的 assistant 消息提取用量摘要 */
+function getUsageLine(session: any): string {
+  try {
+    const msgs = session.messages as any[];
+    // 找最后一个 assistant 消息
+    for (let i = msgs.length - 1; i >= 0; i--) {
+      const m = msgs[i];
+      if (m.role === "assistant" && m.usage) {
+        const u = m.usage;
+        const parts: string[] = [];
+        if (u.input > 0) parts.push(`↑${fmt(u.input)}`);
+        if (u.output > 0) parts.push(`↓${fmt(u.output)}`);
+        if (u.cacheRead > 0) parts.push(`⚡${fmt(u.cacheRead)}`);
+        if (u.totalTokens > 0) parts.push(`∑${fmt(u.totalTokens)}`);
+        if (u.cost?.total > 0) parts.push(`¥${u.cost.total.toFixed(3)}`);
+        return parts.join(" ");
+      }
+    }
+  } catch {}
+  return "";
+}
+
+function fmt(n: number): string {
+  if (n >= 1_000_000) return (n / 1_000_000).toFixed(1) + "M";
+  if (n >= 1_000) return (n / 1_000).toFixed(1) + "k";
+  return String(n);
 }
