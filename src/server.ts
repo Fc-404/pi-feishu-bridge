@@ -10,7 +10,8 @@
 import { createServer } from "node:http";
 import type { BridgeConfig } from "./config.js";
 import { FeishuClient } from "./feishu-client.js";
-import { PiSessionManager, readPromptFile, readMemoryFile } from "./session-manager.js";
+import { PiSessionManager, readPromptFile, readMemoryFile, sessionFileFor } from "./session-manager.js";
+import { getSessionStats, formatUsageLine } from "./cost-tracker.js";
 import type { FeishuSource } from "./types.js";
 
 export class BridgeServer {
@@ -128,8 +129,13 @@ export class BridgeServer {
         replyContent += delta;
       },
       onDone: async () => {
+        // 构建回复：内容 + 用量统计
+        const sessionFile = sessionFileFor(this.config.sessionsDir, sessionKey);
+        const stats = getSessionStats(sessionFile);
+        const usageLine = formatUsageLine(stats.total, stats.today);
+
         if (replyContent) {
-          await this.feishu.replyMarkdown(source, replyContent);
+          await this.feishu.replyMarkdown(source, replyContent + `\n\n---\n${usageLine}`);
         }
         await this.feishu.replyDone(source);
         console.log(`[完成] ${source.senderName}: ${text.slice(0, 40)}`);
