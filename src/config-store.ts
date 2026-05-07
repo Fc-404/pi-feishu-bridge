@@ -19,6 +19,7 @@ export interface ConfigFile {
   log_level?: string;
   workspaces_dir?: string;
   sessions_dir?: string;
+  cwd?: string;
 }
 
 /** 配置键的描述和类型 */
@@ -32,6 +33,7 @@ export const CONFIG_KEYS: Record<string, { description: string; type: "string" |
   log_level:         { description: "日志等级", type: "enum", enum: ["debug", "info", "warn", "error"] },
   workspaces_dir:    { description: "工作目录", type: "string" },
   sessions_dir:      { description: "会话存储目录", type: "string" },
+  cwd:               { description: "工作目录（文件操作路径）", type: "string" },
 };
 
 /** 获取配置文件路径 */
@@ -116,5 +118,6 @@ export function mergeWithEnv(file: ConfigFile): Record<string, string> {
     logLevel:        process.env.PI_FEISHU_LOG_LEVEL ?? file.log_level ?? "info",
     workspacesDir:   process.env.PI_FEISHU_WORKSPACES ?? file.workspaces_dir ?? "./workspaces",
     sessionsDir:     process.env.PI_FEISHU_SESSIONS ?? file.sessions_dir ?? "./sessions",
+    cwd:             process.env.PI_FEISHU_CWD ?? file.cwd ?? process.cwd(),
   };
 }

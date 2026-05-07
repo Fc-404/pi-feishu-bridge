@@ -249,17 +249,18 @@ export class PiSessionManager {
   }
 
   private async createNewSession(sessionKey: string): Promise<AgentSession> {
-    const cwd = join(this.config.workspacesDir, sessionKey);
-    mkdirSync(cwd, { recursive: true });
+    // 工作目录：优先用配置的 cwd，否则用用户沙箱
+    const workDir = this.config.cwd || join(this.config.workspacesDir, sessionKey);
+    mkdirSync(workDir, { recursive: true });
 
     const sessionFile = join(this.config.sessionsDir, `${sessionKey}.jsonl`);
 
     const { session } = await createAgentSession({
-      cwd,
+      cwd: workDir,
       sessionManager: SessionManager.open(sessionFile),
       authStorage: this.authStorage,
       modelRegistry: this.modelRegistry,
-      tools: createCodingTools(cwd) as any,
+      tools: createCodingTools(workDir) as any,
     });
 
     return session;

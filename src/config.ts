@@ -9,8 +9,11 @@ export interface BridgeConfig {
   feishuAppId: string;
   feishuAppSecret: string;
   port: number;
+  /** 用户隔离的沙箱目录 */
   workspacesDir: string;
   sessionsDir: string;
+  /** 实际工作目录，工具在此路径下操作文件 */
+  cwd: string;
   model: string;
   thinkingLevel: "off" | "minimal" | "low" | "medium" | "high" | "xhigh";
   timeout: number;
@@ -27,6 +30,7 @@ export function loadConfig(): BridgeConfig {
     port:            Number(env.port),
     workspacesDir:   env.workspacesDir,
     sessionsDir:     env.sessionsDir,
+    cwd:             env.cwd,
     model:           env.model,
     thinkingLevel:   env.thinkingLevel as BridgeConfig["thinkingLevel"],
     timeout:         Number(env.timeout),
