@@ -1,7 +1,8 @@
 /**
  * pi AgentSession 管理器
  * 每个飞书用户/群聊一个独立 session，自动持久化
- * 不再自动清理空闲 session，用户通过 /new 手动重建
+ * 支持 /new(重建) /stop(中止) /compact(压缩) 命令
+ * 支持提示词文件 + 记忆文件
  */
 
 import {
@@ -12,8 +13,8 @@ import {
   createCodingTools,
 } from "@mariozechner/pi-coding-agent";
 import type { AgentSession } from "@mariozechner/pi-coding-agent";
-import { mkdirSync, unlinkSync, existsSync } from "node:fs";
-import { join } from "node:path";
+import { mkdirSync, unlinkSync, existsSync, readFileSync, writeFileSync } from "node:fs";
+import { join, resolve } from "node:path";
 import type { BridgeConfig } from "./config.js";
 
 export interface SessionEntry {
@@ -21,10 +22,50 @@ export interface SessionEntry {
   createdAt: number;
   lastUsedAt: number;
   chatId: string;
-  /** 当前是否有进行中的 prompt */
   isProcessing: boolean;
-  /** 调用 abort 取消当前处理 */
   abortCurrent?: () => void;
+}
+
+/** 提示词文件和记忆文件的路径 */
+function getDataFiles() {
+  const dir = resolve(".pi");
+  mkdirSync(dir, { recursive: true });
+  return {
+    promptFile: join(dir, "feishu-prompt.md"),
+    memoryFile: join(dir, "feishu-memory.md"),
+  };
+}
+
+/** 读取提示词文件 */
+export function readPromptFile(): string {
+  const { promptFile } = getDataFiles();
+  try {
+    if (existsSync(promptFile)) {
+      return readFileSync(promptFile, "utf-8").trim();
+    }
+  } catch { /* 忽略 */ }
+  return "";
+}
+
+/** 读取记忆文件 */
+export function readMemoryFile(): string {
+  const { memoryFile } = getDataFiles();
+  try {
+    if (existsSync(memoryFile)) {
+      return readFileSync(memoryFile, "utf-8").trim();
+    }
+  } catch { /* 忽略 */ }
+  return "";
+}
+
+/** 写入记忆文件 */
+export function writeMemoryFile(content: string): void {
+  const { memoryFile } = getDataFiles();
+  try {
+    writeFileSync(memoryFile, content, "utf-8");
+  } catch (err) {
+    console.error("[记忆文件] 写入失败:", err);
+  }
 }
 
 export class PiSessionManager {
@@ -38,6 +79,24 @@ export class PiSessionManager {
 
     this.authStorage = AuthStorage.create();
     this.modelRegistry = ModelRegistry.create(this.authStorage);
+  }
+
+  /** 构造带提示词和记忆的消息 */
+  buildMessage(userText: string): string {
+    const parts: string[] = [];
+
+    const prompt = readPromptFile();
+    if (prompt) {
+      parts.push(prompt);
+    }
+
+    const memory = readMemoryFile();
+    if (memory) {
+      parts.push(`---\n## 记忆文件 (可读写)\n\n${memory}\n\n---\n`);
+    }
+
+    parts.push(userText);
+    return parts.join("\n\n");
   }
 
   /** 获取或创建用户的 pi session */
@@ -59,20 +118,17 @@ export class PiSessionManager {
     return session;
   }
 
-  /** 销毁并重建 session（对应 /new 命令） */
+  /** 销毁并重建 session（/new） */
   async resetSession(sessionKey: string): Promise<{ success: boolean; error?: string }> {
     const entry = this.sessions.get(sessionKey);
     if (entry) {
-      // 如果有进行中的操作，先中止
       if (entry.isProcessing && entry.abortCurrent) {
         entry.abortCurrent();
       }
-      // 释放旧 session
       entry.session.dispose();
       this.sessions.delete(sessionKey);
     }
 
-    // 删除旧的会话文件
     const sessionFile = join(this.config.sessionsDir, `${sessionKey}.jsonl`);
     if (existsSync(sessionFile)) {
       try {
@@ -81,8 +137,31 @@ export class PiSessionManager {
         return { success: false, error: "无法删除旧会话文件" };
       }
     }
-
     return { success: true };
+  }
+
+  /** 仅中止当前处理，不清除上下文（/stop） */
+  abortProcessing(sessionKey: string): boolean {
+    const entry = this.sessions.get(sessionKey);
+    if (entry && entry.isProcessing && entry.abortCurrent) {
+      entry.abortCurrent();
+      return true;
+    }
+    return false;
+  }
+
+  /** 压缩上下文（/compact） */
+  async compactSession(sessionKey: string): Promise<{ success: boolean; error?: string }> {
+    const entry = this.sessions.get(sessionKey);
+    if (!entry) {
+      return { success: false, error: "没有活跃的会话" };
+    }
+    try {
+      await entry.session.compact();
+      return { success: true };
+    } catch (err) {
+      return { success: false, error: String(err) };
+    }
   }
 
   /** 发送 prompt 并监听结果 */
@@ -99,11 +178,9 @@ export class PiSessionManager {
     const { onDelta, onDone, onError } = callbacks;
     let finished = false;
 
-    // 标记正在处理
     const entry = sessionKey ? this.sessions.get(sessionKey) : undefined;
     if (entry) entry.isProcessing = true;
 
-    // 流式订阅
     const unsub = session.subscribe((event) => {
       if (finished) return;
 
@@ -125,7 +202,6 @@ export class PiSessionManager {
       }
     });
 
-    // 超时控制
     const timeout = setTimeout(() => {
       if (finished) return;
       finished = true;
@@ -135,7 +211,6 @@ export class PiSessionManager {
       onError("⏱️ 请求超时，请重试或使用 /new 重建会话");
     }, this.config.timeout);
 
-    // 保存 abort 函数
     const abortFn = () => {
       if (finished) return;
       finished = true;
@@ -159,9 +234,8 @@ export class PiSessionManager {
         clearTimeout(timeout);
         if (entry) entry.isProcessing = false;
         const errMsg = String(err);
-        // 上下文超长等错误，提示用户用 /new
         if (errMsg.includes("context") || errMsg.includes("token") || errMsg.includes("length")) {
-          onError(`📦 上下文已满，请发送 /new 开始新会话`);
+          onError("📦 上下文已满，请发送 /new 开始新会话，或发送 /compact 压缩后继续");
         } else {
           onError(`❌ ${errMsg}`);
         }
@@ -174,7 +248,6 @@ export class PiSessionManager {
     return { abort: abortFn };
   }
 
-  /** 创建新 session */
   private async createNewSession(sessionKey: string): Promise<AgentSession> {
     const cwd = join(this.config.workspacesDir, sessionKey);
     mkdirSync(cwd, { recursive: true });
@@ -192,7 +265,6 @@ export class PiSessionManager {
     return session;
   }
 
-  /** 获取统计 */
   getStats() {
     return {
       activeSessions: this.sessions.size,
@@ -206,7 +278,6 @@ export class PiSessionManager {
     };
   }
 
-  /** 检查 session 是否正在处理 */
   isProcessing(sessionKey: string): boolean {
     return this.sessions.get(sessionKey)?.isProcessing ?? false;
   }

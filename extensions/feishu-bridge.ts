@@ -471,6 +471,58 @@ export default function (pi: ExtensionAPI) {
     },
   });
 
+  // ─── /feishu-prompt ─────────────────────────────────────
+  pi.registerCommand("feishu-prompt", {
+    description: "查看/编辑提示词文件 (.pi/feishu-prompt.md)",
+    handler: async (_args, ctx) => {
+      const { readFileSync, existsSync, writeFileSync, mkdirSync } = await import("node:fs");
+      const { resolve } = await import("node:path");
+      const dir = resolve(".pi");
+      mkdirSync(dir, { recursive: true });
+      const promptFile = resolve(dir, "feishu-prompt.md");
+
+      if (!existsSync(promptFile)) {
+        writeFileSync(promptFile, `# 飞书机器人提示词
+
+在这里定义机器人的行为、性格、规则等。
+每次对话都会自动附加此内容。
+`, "utf-8");
+      }
+
+      const content = readFileSync(promptFile, "utf-8");
+      ctx.ui.notify(
+        `📝 **提示词文件**: .pi/feishu-prompt.md\n\n\`\`\`\n${content.slice(0, 1500)}\n\`\`\`\n\n编辑后重启桥接生效 (/feishu-stop → /feishu-daemon)`,
+        "info",
+      );
+    },
+  });
+
+  // ─── /feishu-memory ──────────────────────────────────────
+  pi.registerCommand("feishu-memory", {
+    description: "查看/编辑记忆文件 (.pi/feishu-memory.md)",
+    handler: async (_args, ctx) => {
+      const { readFileSync, existsSync, writeFileSync, mkdirSync } = await import("node:fs");
+      const { resolve } = await import("node:path");
+      const dir = resolve(".pi");
+      mkdirSync(dir, { recursive: true });
+      const memoryFile = resolve(dir, "feishu-memory.md");
+
+      if (!existsSync(memoryFile)) {
+        writeFileSync(memoryFile, `# 飞书机器人记忆
+
+在这里存储需要长期保留的信息。
+机器人可以读取和更新此文件。
+`, "utf-8");
+      }
+
+      const content = readFileSync(memoryFile, "utf-8");
+      ctx.ui.notify(
+        `🧠 **记忆文件**: .pi/feishu-memory.md\n\n\`\`\`\n${content.slice(0, 1500)}\n\`\`\`\n\n编辑后重启桥接生效。也可以在飞书中让机器人帮你更新记忆。`,
+        "info",
+      );
+    },
+  });
+
   // ─── /feishu-set ─────────────────────────────────────────
   pi.registerCommand("feishu-set", {
     description: "设置配置项，如: /feishu-set feishu_app_id cli_xxx",
@@ -542,7 +594,9 @@ export default function (pi: ExtensionAPI) {
   });
 
   console.log("[feishu-bridge] 扩展已加载");
-  console.log("[feishu-bridge] 可用命令: /feishu-status, /feishu-start, /feishu-stop, /feishu-daemon, /feishu-install, /feishu-uninstall, /feishu-logs, /feishu-config, /feishu-set");
+  console.log("[feishu-bridge] 可用命令: /feishu-status, /feishu-start, /feishu-stop, /feishu-daemon,");
+  console.log("[feishu-bridge]           /feishu-install, /feishu-uninstall, /feishu-logs,");
+  console.log("[feishu-bridge]           /feishu-config, /feishu-set, /feishu-prompt, /feishu-memory");
 }
 
 function hide(val: string): string {
