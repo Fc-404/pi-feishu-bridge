@@ -1,6 +1,6 @@
 [Unit]
 Description=飞书 ↔ pi 编码助手实时对话桥接服务
-Documentation=https://github.com/badlogic/pi-mono
+Documentation=https://github.com/Fc-404/pi-feishu-bridge
 After=network-online.target
 Wants=network-online.target
 
@@ -12,11 +12,14 @@ RestartSec=5
 StartLimitBurst=3
 StartLimitIntervalSec=30
 
+# 工作目录
+WorkingDirectory=%h
+
 # 日志
 StandardOutput=journal
 StandardError=journal
 
-# 安全
+# 安全 - 只开放需要的路径
 PrivateTmp=true
 ProtectHome=read-only
 ProtectSystem=strict

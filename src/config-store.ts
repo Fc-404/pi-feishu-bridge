@@ -116,8 +116,8 @@ export function mergeWithEnv(file: ConfigFile): Record<string, string> {
     port:            process.env.PORT ?? String(file.port ?? "3700"),
     timeout:         process.env.PI_FEISHU_TIMEOUT ?? String(file.timeout ?? "300000"),
     logLevel:        process.env.PI_FEISHU_LOG_LEVEL ?? file.log_level ?? "info",
-    workspacesDir:   process.env.PI_FEISHU_WORKSPACES ?? file.workspaces_dir ?? "./workspaces",
-    sessionsDir:     process.env.PI_FEISHU_SESSIONS ?? file.sessions_dir ?? "./sessions",
+    workspacesDir:   process.env.PI_FEISHU_WORKSPACES ?? file.workspaces_dir ?? ".pi/workspaces",
+    sessionsDir:     process.env.PI_FEISHU_SESSIONS ?? file.sessions_dir ?? ".pi/sessions",
     cwd:             process.env.PI_FEISHU_CWD ?? file.cwd ?? process.cwd(),
   };
 }
