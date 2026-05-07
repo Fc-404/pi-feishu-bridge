@@ -7,6 +7,8 @@
  */
 
 import { createServer } from "node:http";
+import { readFileSync, existsSync, readdirSync } from "node:fs";
+import { join } from "node:path";
 import type { BridgeConfig } from "./config.js";
 import { FeishuClient } from "./feishu-client.js";
 import { PiSessionManager, readPromptFile, readMemoryFile } from "./session-manager.js";
@@ -123,10 +125,38 @@ export class BridgeServer {
           await this.feishu.replyMarkdown(source, replyContent);
         }
 
-        // 从 session 取用量统计，放 ✅ 消息里
-        const usageLine = getUsageLine(session);
-        await this.feishu.replyMarkdown(source, `✅ 完成  ${usageLine || ""}`);
+        // 统计当前会话所有用量
+        const msgs: any[] = session.messages;
+        let totalInput = 0, totalOutput = 0, totalCache = 0, turns = 0;
+        let curCost = 0;
+        for (const m of msgs) {
+          if (m.role === "assistant" && m.usage) {
+            const u = m.usage;
+            totalInput += (u.input || 0) + (u.cacheRead || 0);
+            totalOutput += u.output || 0;
+            totalCache += u.cacheRead || 0;
+            turns++;
+            curCost += u.cost?.total || 0;
+          }
+        }
 
+        // 上下文用量
+        const ctx = session.getContextUsage?.();
+        const ctxStr = ctx ? `${fmt(ctx.tokens ?? 0)}/${fmt(ctx.contextWindow ?? 0)}` : "";
+
+        // 当日总费用
+        const todayCost = this.calcTodayCost();
+
+        const parts = [
+          `↑${fmt(totalInput)}`,
+          `↓${fmt(totalOutput)}`,
+          `⚡${fmt(totalCache)}/${fmt(totalInput - totalCache)}`,
+        ];
+        if (ctxStr) parts.push(`📊${ctxStr}`);
+        parts.push(`🔄${turns}`);
+        parts.push(`¥${curCost.toFixed(3)}/${fmt(todayCost)}`);
+
+        await this.feishu.replyMarkdown(source, `✅ 完成  ${parts.join(" ")}`);
         console.log(`[完成] ${source.senderName}: ${text.slice(0, 40)}`);
       },
       onError: async (err: string) => {
@@ -138,6 +168,32 @@ export class BridgeServer {
         }
       },
     }, sessionKey);
+  }
+
+  /** 计算当日所有会话总费用 */
+  private calcTodayCost(): number {
+    const today = new Date().toISOString().slice(0, 10);
+    let total = 0;
+    try {
+      const dir = this.config.sessionsDir;
+      if (!existsSync(dir)) return 0;
+      for (const f of readdirSync(dir)) {
+        if (!f.endsWith(".jsonl")) continue;
+        try {
+          for (const line of readFileSync(join(dir, f), "utf-8").split("\n")) {
+            if (!line.trim()) continue;
+            const e = JSON.parse(line);
+            if (e.type !== "message" || e.message?.role !== "assistant") continue;
+            const ts = e.timestamp || e.message?.timestamp;
+            if (!ts || !new Date(ts).toISOString().startsWith(today)) continue;
+            const u = e.message.usage;
+            if (!u?.cost?.total) continue;
+            total += u.cost.total;
+          }
+        } catch {}
+      }
+    } catch {}
+    return Math.round(total * 1000) / 1000;
   }
 
   private registerShutdown() {
@@ -153,29 +209,8 @@ export class BridgeServer {
   }
 }
 
-/** 从 session 最近的 assistant 消息提取用量摘要 */
-function getUsageLine(session: any): string {
-  try {
-    const msgs = session.messages as any[];
-    // 找最后一个 assistant 消息
-    for (let i = msgs.length - 1; i >= 0; i--) {
-      const m = msgs[i];
-      if (m.role === "assistant" && m.usage) {
-        const u = m.usage;
-        const parts: string[] = [];
-        if (u.input > 0) parts.push(`↑${fmt(u.input)}`);
-        if (u.output > 0) parts.push(`↓${fmt(u.output)}`);
-        if (u.cacheRead > 0) parts.push(`⚡${fmt(u.cacheRead)}`);
-        if (u.totalTokens > 0) parts.push(`∑${fmt(u.totalTokens)}`);
-        if (u.cost?.total > 0) parts.push(`¥${u.cost.total.toFixed(3)}`);
-        return parts.join(" ");
-      }
-    }
-  } catch {}
-  return "";
-}
-
-function fmt(n: number): string {
+function fmt(n: number | undefined | null): string {
+  if (n == null || isNaN(n)) return "0";
   if (n >= 1_000_000) return (n / 1_000_000).toFixed(1) + "M";
   if (n >= 1_000) return (n / 1_000).toFixed(1) + "k";
   return String(n);
