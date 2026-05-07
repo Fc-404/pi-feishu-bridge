@@ -12,7 +12,8 @@
 - [快速开始](#快速开始)
 - [配置方式](#配置方式)
 - [运行方式（三种）](#运行方式三种)
-- [Pi 包安装（推荐）](#pi-包安装推荐)
+- [安装方式](#安装方式)
+- [完全卸载](#完全卸载)
 - [全部命令](#全部命令)
 - [文件结构](#文件结构)
 - [开发指南](#开发指南)
@@ -191,30 +192,103 @@ systemctl --user restart pi-feishu-bridge
 
 ---
 
-## Pi 包安装（推荐）
+## 安装方式
 
-将本桥接安装为 pi 包，**所有命令直接在 pi TUI 中使用**。
+### 方式 A：从 GitHub 安装（推荐）
 
 ```bash
-# 本地安装
-pi install /path/to/pi-feishu-bridge
+pi install git:github.com/Fc-404/pi-feishu-bridge
+```
 
-# 或从 npm 安装（发布后）
+安装后构建：
+
+```bash
+cd ~/.pi/agent/git/github.com/Fc-404/pi-feishu-bridge
+npm install
+npm run build
+```
+
+> 或在任意位置克隆后本地安装（见方式 B）。
+
+**卸载：**
+
+```bash
+pi remove git:github.com/Fc-404/pi-feishu-bridge
+# 或手动删除目录
+rm -rf ~/.pi/agent/git/github.com/Fc-404/pi-feishu-bridge
+```
+
+### 方式 B：本地安装
+
+```bash
+git clone https://github.com/Fc-404/pi-feishu-bridge.git
+cd pi-feishu-bridge
+npm install
+npm run build
+pi install .
+```
+
+**卸载：**
+
+```bash
+pi remove /path/to/pi-feishu-bridge
+# 或从 settings.json 中移除
+```
+
+### 方式 C：从 npm 安装（待发布）
+
+```bash
 pi install npm:pi-feishu-bridge
 ```
 
-安装后，在 pi TUI 中即可使用全部命令：
+**卸载：**
+
+```bash
+pi remove npm:pi-feishu-bridge
+```
+
+### 方式 D：临时加载测试
+
+不安装，仅当前会话加载：
+
+```bash
+pi -e /path/to/pi-feishu-bridge/dist/bin/start.js
+```
+
+### 安装后
+
+在 pi TUI 中即可使用全部命令：
 
 ```
 /feishu-set feishu_app_id cli_xxx
 /feishu-set feishu_app_secret xxx
-/feishu-install          ← 一键安装为系统服务
+/feishu-install          ← 一键安装为 systemd 系统服务
 ```
 
-也可临时加载测试：
+### 完全卸载
+
+如需完全移除所有相关文件：
 
 ```bash
-pi -e /path/to/pi-feishu-bridge/extensions/feishu-bridge.ts
+# 1. 停止并卸载 systemd 服务
+/feishu-uninstall
+# 或
+systemctl --user stop pi-feishu-bridge
+systemctl --user disable pi-feishu-bridge
+rm -f ~/.config/systemd/user/pi-feishu-bridge.service
+systemctl --user daemon-reload
+
+# 2. 移除 pi 包
+pi remove pi-feishu-bridge
+
+# 3. 删除运行时数据（可选）
+rm -rf .pi/feishu-config.json
+rm -rf .pi/logs
+rm -rf sessions/
+rm -rf workspaces/
+
+# 4. 删除全局环境文件（可选）
+rm -f ~/.pi/agent/feishu-config.env
 ```
 
 ### CLI 独立使用
@@ -225,11 +299,12 @@ pi -e /path/to/pi-feishu-bridge/extensions/feishu-bridge.ts
 # 前台运行
 FEISHU_APP_ID=xxx FEISHU_APP_SECRET=xxx npx pi-feishu
 
-# 后台守护进程
-npx pi-feishu --daemon --log-dir ./logs
+# 安装到全局
+npm install -g pi-feishu-bridge
+pi-feishu --daemon
 
 # 生成 systemd 环境文件
-npx pi-feishu --export-env
+pi-feishu --export-env
 ```
 
 ---
@@ -293,7 +368,7 @@ pi-feishu-bridge/
 
 ```bash
 # 克隆
-git clone https://github.com/你的用户名/pi-feishu-bridge.git
+git clone https://github.com/Fc-404/pi-feishu-bridge.git
 cd pi-feishu-bridge
 
 # 安装依赖
