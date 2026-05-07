@@ -62,24 +62,35 @@ pi-feishu-bridge — 飞书 ↔ pi 编码助手实时对话桥接服务
 // ─── --export-env: 生成 systemd 环境文件 ─────────────────────
 if (flags["export-env"]) {
   const { readConfig, mergeWithEnv } = await import("../config-store.js");
+  const { existsSync, readFileSync } = await import("node:fs");
   const file = readConfig();
   const merged = mergeWithEnv(file);
 
   const envPath = resolve(process.env.HOME || "~", ".pi/agent/feishu-config.env");
   mkdirSync(resolve(process.env.HOME || "~", ".pi/agent"), { recursive: true });
 
-  const lines = [
-    `FEISHU_APP_ID=${merged.feishuAppId}`,
-    `FEISHU_APP_SECRET=${merged.feishuAppSecret}`,
-    `PORT=${merged.port}`,
-    `PI_FEISHU_MODEL=${merged.model}`,
-    `PI_FEISHU_THINKING=${merged.thinkingLevel}`,
-    `PI_FEISHU_TIMEOUT=${merged.timeout}`,
-    `PI_FEISHU_LOG_LEVEL=${merged.logLevel}`,
-    `PI_FEISHU_WORKSPACES=${merged.workspacesDir}`,
-    `PI_FEISHU_SESSIONS=${merged.sessionsDir}`,
+  // 读取旧环境文件，保留未被新配置覆盖的值
+  const oldEnv: Record<string, string> = {};
+  if (existsSync(envPath)) {
+    for (const line of readFileSync(envPath, "utf-8").split("\n")) {
+      const eq = line.indexOf("=");
+      if (eq > 0) oldEnv[line.slice(0, eq)] = line.slice(eq + 1);
+    }
+  }
+
+  const pairs: [string, string][] = [
+    ["FEISHU_APP_ID", merged.feishuAppId],
+    ["FEISHU_APP_SECRET", merged.feishuAppSecret],
+    ["PORT", merged.port],
+    ["PI_FEISHU_MODEL", merged.model],
+    ["PI_FEISHU_THINKING", merged.thinkingLevel],
+    ["PI_FEISHU_TIMEOUT", merged.timeout],
+    ["PI_FEISHU_LOG_LEVEL", merged.logLevel],
+    ["PI_FEISHU_WORKSPACES", merged.workspacesDir],
+    ["PI_FEISHU_SESSIONS", merged.sessionsDir],
   ];
 
+  const lines = pairs.map(([k, v]) => `${k}=${v || oldEnv[k] || ""}`);
   writeFileSync(envPath, lines.join("\n") + "\n", "utf-8");
   console.log(`✅ 环境文件已生成: ${envPath}`);
   console.log("现在可以启动 systemd 服务:");
