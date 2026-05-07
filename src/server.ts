@@ -2,9 +2,9 @@
  * 桥接服务主逻辑
  * 连接飞书 WebSocket ↔ pi AgentSession
  *
- * 飞书消息通过表情反应 (Reaction) 标记状态:
- *   👀 处理中  →  ✅ 完成  /  ❌ 错误
- * 命令回复使用文本消息。
+ * 飞书消息通过简短文本回复标记状态:
+ *   👀 → ✅ 完成 / ❌ 错误
+ * 命令回复使用完整文本。
  */
 
 import { createServer } from "node:http";
@@ -64,9 +64,8 @@ export class BridgeServer {
     console.log(`   模型: ${config.model}`);
     console.log(`   超时: ${config.timeout / 1000}s`);
     console.log("");
-    console.log("   发送消息给机器人，通过表情反应查看状态:");
-    console.log("   👀 处理中 → ✅ 完成 / ❌ 错误");
-    console.log("   命令: /new /stop /compact /help (文本回复)");
+    console.log("   发送消息给机器人，收到 👀 即开始处理，完成后返回 ✅");
+    console.log("   命令: /new /stop /compact /help");
   }
 
   private async handleMessage(source: FeishuSource, text: string) {
@@ -103,8 +102,8 @@ export class BridgeServer {
       const m = readMemoryFile();
       await this.feishu.replyMarkdown(source,
         "**飞书桥接使用帮助**\n\n" +
-        "发送消息给机器人，通过表情反应查看状态：\n" +
-        "  👀 处理中 → ✅ 完成 / ❌ 错误\n\n" +
+        "发送消息后机器人会回复 👀 开始处理\n" +
+        "完成后回复 ✅ 或 ❌\n\n" +
         "**命令:**\n" +
         "  /new     重建会话\n  /stop    中止处理\n" +
         "  /compact 压缩上下文\n  /help    帮助\n\n" +
@@ -118,20 +117,18 @@ export class BridgeServer {
     const session = await this.sessionManager.getOrCreate(sessionKey, source.chatId);
     const enrichedText = this.sessionManager.buildMessage(text);
 
-    // 👀 标记处理中
-    await this.feishu.markProcessing(source.messageId);
+    // 回复 👀 表示开始处理
+    await this.feishu.replyProcessing(source);
 
     await this.sessionManager.prompt(session, enrichedText, {
-      onDelta: () => { /* 不需要流式回复 */ },
+      onDelta: () => {},
       onDone: async () => {
-        // ✅ 标记完成
-        await this.feishu.markDone(source.messageId);
+        await this.feishu.replyDone(source);
         console.log(`[完成] ${source.senderName}: ${text.slice(0, 40)}`);
       },
       onError: async (err: string) => {
-        // ❌ 标记错误
         console.error(`[错误] ${err}`);
-        await this.feishu.markError(source.messageId);
+        await this.feishu.replyError(source, err);
       },
     }, sessionKey);
   }

@@ -72,26 +72,24 @@ export class FeishuClient {
     console.log("[飞书] WebSocket 事件订阅已连接");
   }
 
-  // ─── 表情反应 (Reaction) 状态标记 ─────────────────────
+  // ─── 状态标记（用简短文本回复，关联到原消息） ─────────
 
-  /** 标记"正在处理" 👀 */
-  async markProcessing(messageId: string): Promise<void> {
-    try { await this.channel.addReaction(messageId, "eyes"); } catch { /* ignore */ }
+  /** 回复处理中提示 */
+  async replyProcessing(source: FeishuSource): Promise<void> {
+    try { await this.channel.send(source.chatId, { text: "👀" }, { replyTo: source.messageId }); } catch { /* ignore */ }
   }
 
-  /** 标记"完成" ✅，并清除处理标记 */
-  async markDone(messageId: string): Promise<void> {
-    try { await this.channel.removeReactionByEmoji(messageId, "eyes"); } catch { /* ignore */ }
-    try { await this.channel.addReaction(messageId, "white_check_mark"); } catch { /* ignore */ }
+  /** 回复完成标记 */
+  async replyDone(source: FeishuSource): Promise<void> {
+    try { await this.channel.send(source.chatId, { text: "✅ 完成" }, { replyTo: source.messageId }); } catch { /* ignore */ }
   }
 
-  /** 标记"错误" ❌，并清除处理标记 */
-  async markError(messageId: string): Promise<void> {
-    try { await this.channel.removeReactionByEmoji(messageId, "eyes"); } catch { /* ignore */ }
-    try { await this.channel.addReaction(messageId, "x"); } catch { /* ignore */ }
+  /** 回复错误标记 */
+  async replyError(source: FeishuSource, errMsg: string): Promise<void> {
+    try { await this.channel.send(source.chatId, { text: `❌ ${errMsg}` }, { replyTo: source.messageId }); } catch { /* ignore */ }
   }
 
-  // ─── 文本回复（仅 `/new` `/help` 等命令使用） ─────────
+  // ─── 文本回复 ──────────────────────────────────────────
 
   /** 回复文本消息（关联到原消息） */
   async replyText(source: FeishuSource, text: string): Promise<string | undefined> {
