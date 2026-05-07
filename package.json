@@ -1,0 +1,31 @@
+{
+  "name": "pi-feishu-bridge",
+  "version": "0.1.0",
+  "description": "飞书 ↔ pi 编码助手实时对话桥接服务",
+  "keywords": ["pi-package", "feishu", "lark", "pi-coding-agent"],
+  "license": "MIT",
+  "type": "module",
+  "main": "dist/index.js",
+  "bin": {
+    "pi-feishu": "./dist/bin/start.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/bin/start.js",
+    "dev": "tsx watch src/bin/start.ts",
+    "prepublishOnly": "npm run build"
+  },
+  "pi": {
+    "extensions": ["./extensions/feishu-bridge.ts"],
+    "skills": ["./skills"]
+  },
+  "dependencies": {
+    "@larksuiteoapi/node-sdk": "^1.62.1",
+    "@mariozechner/pi-coding-agent": "^0.73.0"
+  },
+  "devDependencies": {
+    "tsx": "^4.19.0",
+    "typescript": "^5.5.0",
+    "@types/node": "^20.0.0"
+  }
+}

@@ -1,0 +1,29 @@
+[Unit]
+Description=飞书 ↔ pi 编码助手实时对话桥接服务
+Documentation=https://github.com/badlogic/pi-mono
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=%h/.npm-global/bin/pi-feishu
+Restart=always
+RestartSec=5
+StartLimitBurst=3
+StartLimitIntervalSec=30
+
+# 日志
+StandardOutput=journal
+StandardError=journal
+
+# 安全
+PrivateTmp=true
+ProtectHome=read-only
+ProtectSystem=strict
+ReadWritePaths=%h/.pi %h/code
+
+# 从配置文件读取环境变量
+EnvironmentFile=%h/.pi/agent/feishu-config.env
+
+[Install]
+WantedBy=default.target
