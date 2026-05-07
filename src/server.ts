@@ -120,15 +120,27 @@ export class BridgeServer {
     // 回复 👀 表示开始处理
     await this.feishu.replyProcessing(source);
 
+    // 收集 AI 回复内容
+    let replyContent = "";
+
     await this.sessionManager.prompt(session, enrichedText, {
-      onDelta: () => {},
+      onDelta: (delta: string) => {
+        replyContent += delta;
+      },
       onDone: async () => {
+        if (replyContent) {
+          await this.feishu.replyMarkdown(source, replyContent);
+        }
         await this.feishu.replyDone(source);
         console.log(`[完成] ${source.senderName}: ${text.slice(0, 40)}`);
       },
       onError: async (err: string) => {
         console.error(`[错误] ${err}`);
-        await this.feishu.replyError(source, err);
+        if (replyContent) {
+          await this.feishu.replyMarkdown(source, replyContent + `\n\n---\n❌ ${err}`);
+        } else {
+          await this.feishu.replyError(source, err);
+        }
       },
     }, sessionKey);
   }
