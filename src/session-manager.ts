@@ -12,7 +12,7 @@ import {
   ModelRegistry,
 } from "@mariozechner/pi-coding-agent";
 import type { AgentSession } from "@mariozechner/pi-coding-agent";
-import { mkdirSync, unlinkSync, existsSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import type { BridgeConfig } from "./config.js";
 
@@ -128,17 +128,12 @@ export class PiSessionManager {
       this.sessions.delete(sessionKey);
     }
 
-    // 等待文件句柄释放
+    // 清空文件内容代替删除，避免文件句柄冲突
     const sessionFile = join(this.config.sessionsDir, `${sessionKey}.jsonl`);
-    for (let i = 0; i < 5; i++) {
-      if (!existsSync(sessionFile)) break;
-      try {
-        unlinkSync(sessionFile);
-        break;
-      } catch {
-        if (i < 4) await new Promise((r) => setTimeout(r, 100));
-        else return { success: false, error: "无法删除旧会话文件，请稍后重试" };
-      }
+    try {
+      writeFileSync(sessionFile, "", "utf-8");
+    } catch (err) {
+      return { success: false, error: `无法重置会话文件: ${err}` };
     }
     return { success: true };
   }
