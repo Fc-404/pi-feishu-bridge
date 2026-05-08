@@ -1,142 +1,59 @@
 /**
- * 桥接服务主逻辑
- *
- * 设计理念：飞书就是 pi 的远程终端。
- * - 同一个工作目录、同一个 AGENTS.md、同一个 session
- * - 无用户隔离、无工作区沙箱
- * - 支持所有 pi 命令（/new /compact 等由 session 处理）
- * - 额外功能：流式回复 + 完成通知 + 用量统计
+ * 飞书桥接服务核心逻辑
+ * 处理飞书消息 → pi session 的发送、回复、命令处理
  */
 
-import { createServer } from "node:http";
-import type { BridgeConfig } from "./config.js";
 import { FeishuClient } from "./feishu-client.js";
 import { PiSessionManager } from "./session-manager.js";
+import type { BridgeConfig } from "./config.js";
 import type { FeishuSource } from "./types.js";
+
+/** 格式化 token 数量 */
+function fmt(n: number): string {
+  if (n >= 1_000_000) return (n / 1_000_000).toFixed(1) + "M";
+  if (n >= 1_000) return (n / 1_000).toFixed(1) + "k";
+  return String(n);
+}
+
+/** 格式化费用（元） */
+function fmtCost(n: number): string {
+  if (n >= 100) return n.toFixed(1);
+  if (n >= 1) return n.toFixed(3);
+  if (n === 0) return "0";
+  return n.toFixed(4);
+}
 
 export class BridgeServer {
   private feishu: FeishuClient;
   private sessionManager: PiSessionManager;
-  private httpServer: ReturnType<typeof createServer>;
 
   constructor(private config: BridgeConfig) {
-    this.feishu = new FeishuClient(config);
-    this.sessionManager = new PiSessionManager(config);
+    this.feishu = new FeishuClient(this.config);
+    this.sessionManager = new PiSessionManager(this.config);
     this.feishu.onMessage((source, text) => this.handleMessage(source, text));
-
-    this.httpServer = createServer((req, res) => {
-      if (req.url === "/health") {
-        res.writeHead(200, { "Content-Type": "application/json" });
-        res.end(JSON.stringify({
-          status: "ok",
-          uptime: process.uptime(),
-          session: this.sessionManager.getStatus(),
-        }));
-      } else {
-        res.writeHead(404);
-        res.end("Not Found");
-      }
-    });
   }
 
   async start(): Promise<void> {
-    const { config } = this;
-
-    console.log("\n═══════════════════════════════════════");
-    console.log("  飞书桥接 v2 — 统一 pi session");
-    console.log("═══════════════════════════════════════");
-
-    if (!config.feishuAppId || !config.feishuAppSecret) {
-      console.error("❌ 请设置 FEISHU_APP_ID 和 FEISHU_APP_SECRET 环境变量");
-      process.exit(1);
-    }
-
-    await this.feishu.start();
-
-    this.httpServer.listen(config.port, "127.0.0.1", () => {
-      console.log(`[健康检查] http://127.0.0.1:${config.port}/health`);
-    });
-
+    // session 路径由 PiSessionManager 构造时自动确保
+    // 注册 shutdown
     this.registerShutdown();
-
-    console.log("\n✅ 飞书 ↔ pi 桥接服务已启动");
-    console.log(`   工作目录: ${process.cwd()}`);
-    console.log(`   模型: ${config.model}`);
-    console.log(`   超时: ${config.timeout / 1000}s`);
-    console.log("   命令: /new /stop /compact /help");
-    console.log("   提示: 项目中的 AGENTS.md 会自动加载");
+    await this.feishu.start();
   }
 
   private async handleMessage(source: FeishuSource, text: string) {
-    console.log(
-      `[消息] ${source.chatType === "p2p" ? "私聊" : "群聊"} ` +
-      `来自 ${source.senderName}: ${text.slice(0, 60)}${text.length > 60 ? "..." : ""}`
-    );
-
-    const cmd = text.trim().toLowerCase();
-
-    // ─── 本地命令 ─────────────────────────────────────────
-    if (cmd === "/new") {
-      const r = await this.sessionManager.resetSession();
-      await this.feishu.replyMarkdown(source, r.success ? "✅ 会话已重置" : `❌ 重置失败: ${r.error}`);
-      return;
-    }
-    if (cmd === "/stop") {
-      const aborted = this.sessionManager.abortProcessing();
-      await this.feishu.replyMarkdown(source, aborted ? "⏹ 已中止" : "ℹ️ 无处理中的任务");
-      return;
-    }
-    if (cmd === "/compact") {
-      const r = await this.sessionManager.compactSession();
-      await this.feishu.replyMarkdown(source, r.success ? "✅ 上下文已压缩" : `❌ 压缩失败: ${r.error}`);
-      return;
-    }
-    if (cmd === "/status") {
-      const st = this.sessionManager.getStatus();
-      const stats = this.sessionManager.getUsageStats();
-      const todayCost = this.sessionManager.calcTodayCost();
-
-      const lines = [
-        "**🤖 桥接状态**",
-        "",
-        `处理中: ${st.isProcessing ? "🟢 是" : "🔴 否"}`,
-        st.currentTool ? `当前操作: \`${st.currentTool}\`` : "",
-        st.isProcessing ? `已运行: ${st.runningFor}` : "",
-        `模型: ${st.model || "未知"}`,
-        "",
-        "**当前会话统计:**",
-        `  ↑${fmt(stats.totalInput)} ↓${fmt(stats.totalOutput)}`,
-        `  ⚡${fmt(stats.totalCache)}/${fmt(stats.totalInput - stats.totalCache)}`,
-        `  🔄${stats.turns} 次调用`,
-        `  ¥${fmtCost(stats.cost)}`,
-        "",
-        `**今日总费用:** ¥${fmtCost(todayCost)}`,
-        "",
-        "**命令:** /new /stop /compact /help",
-      ].filter(Boolean).join("\n");
-
-      await this.feishu.replyMarkdown(source, lines);
+    // ─── 命令处理（必须在 LLM 之前立即处理） ────────────
+    if (text.startsWith("/")) {
+      console.log(`[命令] ${source.senderName}: ${text}`);
+      await this.handleCommand(source, text);
       return;
     }
 
-    if (cmd === "/help") {
-      await this.feishu.replyMarkdown(source,
-        "**飞书 ↔ pi 桥接**\n\n" +
-        "像在 pi TUI 中一样对话即可。\n\n" +
-        "**命令:**\n" +
-        "  /new     重置会话\n" +
-        "  /stop    中止当前回复\n" +
-        "  /compact 压缩上下文\n" +
-        "  /help    显示此帮助\n\n" +
-        "**提示:**\n" +
-        "- AGENTS.md 自动加载到系统提示词\n" +
-        "- 项目配置（.pi/）与 pi 完全共享\n" +
-        "- 记忆文件可通过对话让 AI 更新"
-      );
-      return;
-    }
+    // ─── 链式表情回复 ───
+    // 1. Get 在用户消息上（已收到）
+    // 2. 💭 思考中... + StatusFlashOfInspiration（bot 初始回复）
+    // 3. 🔧 tool + Typing（可选，执行命令时）
+    // 4. AI 内容编辑替换原始思考消息 + DONE
 
-    // ─── 发送到 pi session ────────────────────────────────
     const session = await this.sessionManager.getSession();
 
     // 检查是否正在处理
@@ -145,51 +62,128 @@ export class BridgeServer {
       return;
     }
 
-    // ─── 链式表情 ───
-    // 用户消息 → Get
-    // 思考中 → 文本回复 + StatusFlashOfInspiration
-    // 命令执行 → 文本回复 + Typing
-    // 完成 → AI 内容 + DONE
-    // 错误 → 错误信息 + ClownFace
-
     console.log(`[发送] 正在发送给 LLM: ${text.slice(0, 60)}`);
-    await this.feishu.reactGet(source);  // Get 在用户消息上
+    await this.feishu.reactGet(source);  // Get 在用户消息
 
     let replyContent = "";
-    let lastReplyId: string | undefined;
+    let thinkingMsgId: string | undefined;
+    let thinkingSent = false;
 
     await this.sessionManager.prompt(text, {
       onDelta: (delta: string) => { replyContent += delta; },
-      onToolEvent: async (evt) => {
-        if (evt.type === "thinking") {
-          lastReplyId = await this.feishu.replyWithReaction(
-            source, "💭 思考中...", "StatusFlashOfInspiration"
-          );
+      onToolEvent: async (evt: { type: string; toolName: string; detail: string }) => {
+        if (evt.type === "thinking" && !thinkingSent) {
+          thinkingSent = true;
+          thinkingMsgId = await this.feishu.sendThinking(source);  // 💭 + StatusFlashOfInspiration
         } else if (evt.type === "tool_start") {
-          lastReplyId = await this.feishu.replyWithReaction(
-            source, `🔧 **${evt.toolName}**: ${evt.detail}`, "Typing"
-          );
+          // 如果还没发思考消息，先发
+          if (!thinkingSent) {
+            thinkingSent = true;
+            thinkingMsgId = await this.feishu.sendThinking(source);
+          }
+          // 发工具执行消息 + Typing
+          await this.feishu.sendToolRunning(source, `🔧 **${evt.toolName}**: ${evt.detail}`);
         }
       },
       onDone: async () => {
         console.log(`[完成] AI 回复长度: ${replyContent.length} 字符`);
-        if (replyContent) {
-          // 发送 AI 回复内容，在其上加 DONE
-          lastReplyId = await this.feishu.replyWithReaction(
-            source, replyContent, "DONE"
-          );
+        const finalText = replyContent || "完成";
+        if (thinkingMsgId) {
+          // 编辑原始思考消息 → AI 内容 + DONE
+          await this.feishu.finishMessage(thinkingMsgId, finalText);
+        } else if (replyContent) {
+          // 没有中间消息，直接发
+          await this.feishu.replyMarkdown(source, replyContent);
         }
       },
       onError: async (err: string) => {
         console.error(`[错误] ${err}`);
-        const text = replyContent
-          ? replyContent + `\n\n---\n❌ ${err}`
-          : `❌ ${err}`;
-        lastReplyId = await this.feishu.replyWithReaction(
-          source, text, "ClownFace"
-        );
+        const finalText = replyContent ? replyContent + `\n\n---\n❌ ${err}` : `❌ ${err}`;
+        if (thinkingMsgId) {
+          await this.feishu.failMessage(thinkingMsgId, finalText);
+        } else {
+          await this.feishu.replyMarkdown(source, finalText);
+        }
       },
     });
+  }
+
+  private async handleCommand(source: FeishuSource, text: string) {
+    const cmd = text.split(/\s+/);
+    const cmdName = cmd[0].toLowerCase();
+    const args = cmd.slice(1);
+
+    switch (cmdName) {
+      case "/new": {
+        this.sessionManager.resetSession();
+        await this.feishu.replyMarkdown(source, "🆕 会话已重置，开启全新对话");
+        break;
+      }
+
+      case "/stop": {
+        const session = await this.sessionManager.getSession();
+        if (session.isStreaming) {
+          session.abort();
+          // 给 LLM 一点时间处理 abort
+          setTimeout(async () => {
+            await this.feishu.replyMarkdown(source, "⏹️ 已中止 LLM 生成");
+          }, 100);
+        } else {
+          await this.feishu.replyMarkdown(source, "ℹ️ 当前没有正在进行的任务");
+        }
+        break;
+      }
+
+      case "/compact": {
+        const result = await this.sessionManager.compactSession();
+        if (result.success) {
+          await this.feishu.replyMarkdown(source, "🗜️ 已压缩上下文历史（关闭时间线）");
+        } else {
+          await this.feishu.replyMarkdown(source, `ℹ️ 上下文未压缩: ${result.error || "未知错误"}`);
+        }
+        break;
+      }
+
+      case "/status": {
+        const session = await this.sessionManager.getSession();
+        const stats = this.sessionManager.getUsageStats();
+        const todayCost = this.sessionManager.calcTodayCost();
+
+        const lines: string[] = [
+          "**📊 当前状态**",
+          "",
+          `- 会话消息数: **${session.messages.length}**`,
+          `- 总输入 token: **${fmt(stats.totalInput)}**`,
+          `- 总输出 token: **${fmt(stats.totalOutput)}**`,
+          `- 缓存命中: **${fmt(stats.totalCache)}**`,
+          `- 上下文轮次: **${stats.turns}**`,
+          `- 累计费用: **¥${fmtCost(stats.cost)}**`,
+          `- 今日累计: **¥${fmtCost(todayCost)}**`,
+          session.isStreaming ? "\n🔄 **LLM 正在生成中...**" : "\n💤 **空闲中**",
+        ];
+
+        await this.feishu.replyMarkdown(source, lines.join("\n"));
+        break;
+      }
+
+      case "/help":
+        await this.feishu.replyMarkdown(source,
+          "**🤖 pi 飞书桥接命令**\n\n" +
+          "  /new      重置会话，开始全新对话\n" +
+          "  /stop     中止当前 LLM 生成\n" +
+          "  /compact  压缩上下文历史\n" +
+          "  /status   查看用量和费用统计\n" +
+          "  /help     显示此帮助\n\n" +
+          "**提示:**\n" +
+          "- AGENTS.md 自动加载到系统提示词\n" +
+          "- 项目配置（.pi/）与 pi 完全共享\n" +
+          "- 记忆文件可通过对话让 AI 更新"
+        );
+        break;
+
+      default:
+        await this.feishu.replyMarkdown(source, `⚠️ 未知命令: ${cmdName}\n发送 /help 查看可用命令`);
+    }
   }
 
   private registerShutdown() {
@@ -197,26 +191,10 @@ export class BridgeServer {
       console.log("\n[关闭] 正在清理...");
       this.sessionManager.dispose();
       await this.feishu.stop();
-      this.httpServer.close();
       process.exit(0);
     };
+
     process.on("SIGINT", shutdown);
     process.on("SIGTERM", shutdown);
   }
-}
-
-function fmt(n: number | undefined | null): string {
-  if (n == null || isNaN(n)) return "0";
-  if (n >= 1_000_000) return (n / 1_000_000).toFixed(1) + "M";
-  if (n >= 1_000) return (n / 1_000).toFixed(1) + "k";
-  if (n >= 1) return n.toFixed(3);
-  // 小于1元显示足够精度
-  return n.toFixed(6);
-}
-
-/** 格式化金额，小数值保留足够精度 */
-function fmtCost(n: number): string {
-  if (n >= 0.01) return n.toFixed(3);
-  if (n >= 0.0001) return n.toFixed(6);
-  return n.toFixed(6);
 }

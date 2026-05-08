@@ -73,16 +73,21 @@ export class FeishuClient {
     console.log("[飞书] WebSocket 事件订阅已连接");
   }
 
-  // ─── 链式表情反应 ──────────────────────────────────────
-  // Get                  → 用户消息（已收到）
-  // StatusFlashOfInspiration → bot 回复（LLM 思考）
-  // Typing               → bot 回复（执行命令）
-  // DONE                 → bot 最终回复（完成）
-  // ClownFace            → bot 回复（错误）
+  // ─── 链式表情反应（Emoji Reaction + 消息编辑） ────────
+  // Get                      → 用户消息（已收到）
+  // StatusFlashOfInspiration → 思考中回复（思考中）
+  // Typing                   → 工具回复（执行命令）
+  // DONE                     → 最终回复编辑后（完成）
+  // ClownFace                → 最终回复编辑后（错误）
 
   /** 给指定消息加表情 */
   async addReaction(msgId: string, emoji: string): Promise<void> {
     try { await this.channel.addReaction(msgId, emoji); } catch {}
+  }
+
+  /** 从指定消息移除表情 */
+  async removeReaction(msgId: string, emoji: string): Promise<void> {
+    try { await this.channel.removeReactionByEmoji(msgId, emoji); } catch {}
   }
 
   /** 给用户消息加 Get（已收到） */
@@ -90,21 +95,43 @@ export class FeishuClient {
     await this.addReaction(source.messageId, "Get");
   }
 
-  /** 发送文本回复并在其上挂表情，返回消息 ID */
-  async replyWithReaction(source: FeishuSource, text: string, emoji: string): Promise<string | undefined> {
-    const msgId = await this.replyMarkdown(source, text);
-    if (msgId) await this.addReaction(msgId, emoji);
+  /** 发送"思考中"初始消息，挂 StatusFlashOfInspiration 反应，返回 msgId */
+  async sendThinking(source: FeishuSource): Promise<string | undefined> {
+    const msgId = await this.replyMarkdown(source, "💭 思考中...");
+    if (msgId) await this.addReaction(msgId, "StatusFlashOfInspiration");
     return msgId;
   }
 
-  /** 给指定回复消息加 DONE 完成表情 */
-  async reactDone(replyMsgId: string): Promise<void> {
-    await this.addReaction(replyMsgId, "DONE");
+  /** 发送工具执行消息，挂 Typing 反应 */
+  async sendToolRunning(source: FeishuSource, text: string): Promise<string | undefined> {
+    const msgId = await this.replyMarkdown(source, text);
+    if (msgId) await this.addReaction(msgId, "Typing");
+    return msgId;
   }
 
-  /** 给指定回复消息加 ClownFace 错误表情 */
-  async reactError(replyMsgId: string): Promise<void> {
-    await this.addReaction(replyMsgId, "ClownFace");
+  /** 编辑指定消息替换内容，更新反应: 去掉 StatusFlashOfInspiration，加 DONE */
+  async finishMessage(msgId: string, text: string): Promise<void> {
+    await this.removeReaction(msgId, "StatusFlashOfInspiration");
+    await this.editMarkdown(msgId, text);
+    await this.addReaction(msgId, "DONE");
+  }
+
+  /** 编辑指定消息替换内容，更新反应: 去掉 StatusFlashOfInspiration，加 ClownFace */
+  async failMessage(msgId: string, text: string): Promise<void> {
+    await this.removeReaction(msgId, "StatusFlashOfInspiration");
+    await this.editMarkdown(msgId, text);
+    await this.addReaction(msgId, "ClownFace");
+  }
+
+  // ─── 消息编辑 ──────────────────────────────────────────
+
+  /** 编辑已发送消息的文本内容 */
+  async editMarkdown(msgId: string, text: string): Promise<void> {
+    try {
+      await this.channel.editMessage(msgId, text);
+    } catch (err) {
+      console.error(`[飞书] 编辑消息失败:`, err);
+    }
   }
 
   // ─── 文本回复 ──────────────────────────────────────────
