@@ -27,6 +27,10 @@ export class PiSessionManager {
   private sessionFile: string = "";
   private isProcessing = false;
   private abortCurrent?: () => void;
+  private processingStartTime: number = 0;
+  /** 当前正在执行的工具，如 "bash: ls src/" */
+  currentTool: string = "";
+  private _model: string = "";
   /** 最近一次 agent_end 事件的 messages，用于统计 */
   private lastMessages: any[] | null = null;
   private authStorage: AuthStorage;
@@ -113,6 +117,8 @@ export class PiSessionManager {
     let finished = false;
 
     this.isProcessing = true;
+    this.processingStartTime = Date.now();
+    this.currentTool = "等待 LLM 响应...";
 
     // 空闲超时：每次有活动重置
     let idleTimer: ReturnType<typeof setTimeout> | null = null;
@@ -151,11 +157,13 @@ export class PiSessionManager {
         case "tool_execution_start": {
           const args = (event as any).args || {};
           const argStr = Object.values(args).filter(Boolean).join(" ").slice(0, 80);
+          this.currentTool = `${event.toolName}: ${argStr}`;
           onToolEvent?.({ type: "tool_start", toolName: event.toolName, detail: argStr });
           break;
         }
 
         case "tool_execution_end": {
+          this.currentTool = "";
           const isErr = (event as any).isError;
           onToolEvent?.({ type: "tool_end", toolName: event.toolName, detail: isErr ? "❌" : "✅" });
           break;
@@ -174,6 +182,7 @@ export class PiSessionManager {
           unsub();
           if (idleTimer) clearTimeout(idleTimer);
           this.isProcessing = false;
+          this.currentTool = "";
           if ("messages" in event) {
             this.lastMessages = (event as any).messages;
           }
@@ -274,10 +283,23 @@ export class PiSessionManager {
   }
 
   getStatus() {
+    const msgs = this.lastMessages;
+    let model = "";
+    if (msgs) {
+      for (let i = msgs.length - 1; i >= 0; i--) {
+        if (msgs[i].role === "assistant" && msgs[i].model) {
+          model = msgs[i].model;
+          break;
+        }
+      }
+    }
     return {
       hasSession: this.session !== null,
       isProcessing: this.isProcessing,
+      currentTool: this.currentTool,
+      runningFor: this.isProcessing ? ((Date.now() - this.processingStartTime) / 1000).toFixed(0) + "s" : "-",
       sessionFile: this.sessionFile || null,
+      model,
     };
   }
 

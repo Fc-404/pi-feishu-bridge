@@ -91,6 +91,34 @@ export class BridgeServer {
       await this.feishu.replyMarkdown(source, r.success ? "✅ 上下文已压缩" : `❌ 压缩失败: ${r.error}`);
       return;
     }
+    if (cmd === "/status") {
+      const st = this.sessionManager.getStatus();
+      const stats = this.sessionManager.getUsageStats();
+      const todayCost = this.sessionManager.calcTodayCost();
+
+      const lines = [
+        "**🤖 桥接状态**",
+        "",
+        `处理中: ${st.isProcessing ? "🟢 是" : "🔴 否"}`,
+        st.currentTool ? `当前操作: \`${st.currentTool}\`` : "",
+        st.isProcessing ? `已运行: ${st.runningFor}` : "",
+        `模型: ${st.model || "未知"}`,
+        "",
+        "**当前会话统计:**",
+        `  ↑${fmt(stats.totalInput)} ↓${fmt(stats.totalOutput)}`,
+        `  ⚡${fmt(stats.totalCache)}/${fmt(stats.totalInput - stats.totalCache)}`,
+        `  🔄${stats.turns} 次调用`,
+        `  ¥${fmtCost(stats.cost)}`,
+        "",
+        `**今日总费用:** ¥${fmtCost(todayCost)}`,
+        "",
+        "**命令:** /new /stop /compact /help",
+      ].filter(Boolean).join("\n");
+
+      await this.feishu.replyMarkdown(source, lines);
+      return;
+    }
+
     if (cmd === "/help") {
       await this.feishu.replyMarkdown(source,
         "**飞书 ↔ pi 桥接**\n\n" +
