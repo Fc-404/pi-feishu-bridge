@@ -109,29 +109,18 @@ export class FeishuClient {
     return msgId;
   }
 
-  /** 编辑指定消息替换内容，更新反应: 去掉 StatusFlashOfInspiration，加 DONE */
-  async finishMessage(msgId: string, text: string): Promise<void> {
-    await this.removeReaction(msgId, "StatusFlashOfInspiration");
-    await this.editMarkdown(msgId, text);
-    await this.addReaction(msgId, "DONE");
+  /** 发送 AI 回复 + DONE */
+  async replyWithDONE(source: FeishuSource, text: string): Promise<string | undefined> {
+    const msgId = await this.replyMarkdown(source, text);
+    if (msgId) await this.addReaction(msgId, "DONE");
+    return msgId;
   }
 
-  /** 编辑指定消息替换内容，更新反应: 去掉 StatusFlashOfInspiration，加 ClownFace */
-  async failMessage(msgId: string, text: string): Promise<void> {
-    await this.removeReaction(msgId, "StatusFlashOfInspiration");
-    await this.editMarkdown(msgId, text);
-    await this.addReaction(msgId, "ClownFace");
-  }
-
-  // ─── 消息编辑 ──────────────────────────────────────────
-
-  /** 编辑已发送消息的文本内容 */
-  async editMarkdown(msgId: string, text: string): Promise<void> {
-    try {
-      await this.channel.editMessage(msgId, text);
-    } catch (err) {
-      console.error(`[飞书] 编辑消息失败:`, err);
-    }
+  /** 发送错误回复 + ClownFace */
+  async replyWithClownFace(source: FeishuSource, text: string): Promise<string | undefined> {
+    const msgId = await this.replyMarkdown(source, text);
+    if (msgId) await this.addReaction(msgId, "ClownFace");
+    return msgId;
   }
 
   // ─── 文本回复 ──────────────────────────────────────────

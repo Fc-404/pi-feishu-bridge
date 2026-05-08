@@ -49,10 +49,10 @@ export class BridgeServer {
     }
 
     // ─── 链式表情回复 ───
-    // 1. Get 在用户消息上（已收到）
-    // 2. 💭 思考中... + StatusFlashOfInspiration（bot 初始回复）
-    // 3. 🔧 tool + Typing（可选，执行命令时）
-    // 4. AI 内容编辑替换原始思考消息 + DONE
+    // 用户消息 → Get
+    // 💭 思考中... + StatusFlashOfInspiration
+    // 🔧 tool + Typing
+    // AI 回复 + DONE / 错误 + ClownFace
 
     const session = await this.sessionManager.getSession();
 
@@ -66,7 +66,6 @@ export class BridgeServer {
     await this.feishu.reactGet(source);  // Get 在用户消息
 
     let replyContent = "";
-    let thinkingMsgId: string | undefined;
     let thinkingSent = false;
 
     await this.sessionManager.prompt(text, {
@@ -74,36 +73,27 @@ export class BridgeServer {
       onToolEvent: async (evt: { type: string; toolName: string; detail: string }) => {
         if (evt.type === "thinking" && !thinkingSent) {
           thinkingSent = true;
-          thinkingMsgId = await this.feishu.sendThinking(source);  // 💭 + StatusFlashOfInspiration
+          await this.feishu.sendThinking(source);  // 💭 + StatusFlashOfInspiration
         } else if (evt.type === "tool_start") {
-          // 如果还没发思考消息，先发
           if (!thinkingSent) {
             thinkingSent = true;
-            thinkingMsgId = await this.feishu.sendThinking(source);
+            await this.feishu.sendThinking(source);
           }
-          // 发工具执行消息 + Typing
-          await this.feishu.sendToolRunning(source, `🔧 **${evt.toolName}**: ${evt.detail}`);
+          await this.feishu.sendToolRunning(source, `🔧 **${evt.toolName}**: ${evt.detail}`);  // 🔧 + Typing
         }
       },
       onDone: async () => {
         console.log(`[完成] AI 回复长度: ${replyContent.length} 字符`);
-        const finalText = replyContent || "完成";
-        if (thinkingMsgId) {
-          // 编辑原始思考消息 → AI 内容 + DONE
-          await this.feishu.finishMessage(thinkingMsgId, finalText);
-        } else if (replyContent) {
-          // 没有中间消息，直接发
-          await this.feishu.replyMarkdown(source, replyContent);
+        if (replyContent) {
+          await this.feishu.replyWithDONE(source, replyContent);  // AI 内容 + DONE
         }
       },
       onError: async (err: string) => {
         console.error(`[错误] ${err}`);
-        const finalText = replyContent ? replyContent + `\n\n---\n❌ ${err}` : `❌ ${err}`;
-        if (thinkingMsgId) {
-          await this.feishu.failMessage(thinkingMsgId, finalText);
-        } else {
-          await this.feishu.replyMarkdown(source, finalText);
-        }
+        const finalText = replyContent
+          ? replyContent + `\n\n---\n❌ ${err}`
+          : `❌ ${err}`;
+        await this.feishu.replyWithClownFace(source, finalText);  // 内容 + ClownFace
       },
     });
   }
