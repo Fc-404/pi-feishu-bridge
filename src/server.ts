@@ -145,9 +145,10 @@ export class BridgeServer {
       return;
     }
 
-    // 👀 表情反应：处理中
+    // 处理中：表情反应 + 👀 文本（表情可能不兼容，文本保底）
     console.log(`[发送] 正在发送给 LLM: ${text.slice(0, 60)}`);
     await this.feishu.reactProcessing(source.messageId);
+    await this.feishu.replyProcessing(source);
 
     // 收集 AI 回复
     let replyContent = "";
@@ -156,9 +157,9 @@ export class BridgeServer {
       onDelta: (delta: string) => { replyContent += delta; },
       onDone: async () => {
         console.log(`[完成] AI 回复长度: ${replyContent.length} 字符`);
-        // 👀 → 👏，用表情反应替代 ✅ 完成消息
+        // 👀 → 👏（表情）
         await this.feishu.reactDone(source.messageId);
-        // 只发 AI 回复内容，不发状态和用量
+        // AI 回复内容
         if (replyContent) {
           await this.feishu.replyMarkdown(source, replyContent);
         }

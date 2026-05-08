@@ -75,21 +75,36 @@ export class FeishuClient {
 
   // ─── 飞书表情反应（Emoji Reaction） ───────────────────
 
-  /** 在用户消息上加 👀（处理中） */
+  /** 在用户消息上加表情（处理中） */
   async reactProcessing(messageId: string): Promise<void> {
-    try { await this.channel.addReaction(messageId, "EYES"); } catch {}
+    try {
+      await this.channel.addReaction(messageId, "EYES");
+      console.log(`[reaction] EYES OK`);
+    } catch (err) {
+      console.error(`[reaction] EYES 失败:`, (err as any)?.message || err);
+    }
   }
 
-  /** 替换用户消息表情：👀 → 👏（完成） */
+  /** 替换用户消息表情：处理中 → 完成 */
   async reactDone(messageId: string): Promise<void> {
     try { await this.channel.removeReactionByEmoji(messageId, "EYES"); } catch {}
-    try { await this.channel.addReaction(messageId, "CLAP"); } catch {}
+    try {
+      await this.channel.addReaction(messageId, "CLAP");
+      console.log(`[reaction] CLAP OK`);
+    } catch (err) {
+      console.error(`[reaction] CLAP 失败:`, (err as any)?.message || err);
+    }
   }
 
-  /** 替换用户消息表情：👀 → 😢（错误） */
+  /** 替换用户消息表情：处理中 → 错误 */
   async reactError(messageId: string): Promise<void> {
     try { await this.channel.removeReactionByEmoji(messageId, "EYES"); } catch {}
-    try { await this.channel.addReaction(messageId, "CRY"); } catch {}
+    try {
+      await this.channel.addReaction(messageId, "CRY");
+      console.log(`[reaction] CRY OK`);
+    } catch (err) {
+      console.error(`[reaction] CRY 失败:`, (err as any)?.message || err);
+    }
   }
 
   // ─── 文本回复（状态标记） ───────────────────────────────
