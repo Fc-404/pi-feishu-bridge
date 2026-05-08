@@ -145,49 +145,27 @@ export class BridgeServer {
       return;
     }
 
-    // 👀 开始处理：表情反应 + 文本
+    // 👀 表情反应：处理中
     console.log(`[发送] 正在发送给 LLM: ${text.slice(0, 60)}`);
     await this.feishu.reactProcessing(source.messageId);
-    await this.feishu.replyProcessing(source);
 
     // 收集 AI 回复
     let replyContent = "";
 
     await this.sessionManager.prompt(text, {
       onDelta: (delta: string) => { replyContent += delta; },
-      onToolEvent: async (evt) => {
-        if (evt.type === "tool_start") {
-          await this.feishu.replyMarkdown(source, `🔧 **${evt.toolName}**: ${evt.detail}`);
-        }
-      },
       onDone: async () => {
         console.log(`[完成] AI 回复长度: ${replyContent.length} 字符`);
-        // 先发 AI 回复内容
+        // 👀 → 👏，用表情反应替代 ✅ 完成消息
+        await this.feishu.reactDone(source.messageId);
+        // 只发 AI 回复内容，不发状态和用量
         if (replyContent) {
           await this.feishu.replyMarkdown(source, replyContent);
         }
-
-        // 换表情：👀 → 👏
-        await this.feishu.reactDone(source.messageId);
-
-        // 用量统计
-        const stats = this.sessionManager.getUsageStats();
-        const todayCost = this.sessionManager.calcTodayCost();
-
-        const parts = [
-          `↑${fmt(stats.totalInput)}`,
-          `↓${fmt(stats.totalOutput)}`,
-          `⚡${fmt(stats.totalCache)}/${fmt(stats.totalInput - stats.totalCache)}`,
-          `🔄${stats.turns}`,
-          `¥${fmtCost(stats.cost)}/${fmtCost(todayCost)}`,
-        ];
-
-        await this.feishu.replyMarkdown(source, `✅ 完成  ${parts.join(" ")}`);
-        console.log(`[完成] ${source.senderName}: ${text.slice(0, 40)}`);
       },
       onError: async (err: string) => {
         console.error(`[错误] ${err}`);
-        // 换表情：👀 → 😢
+        // 👀 → 😢
         await this.feishu.reactError(source.messageId);
         if (replyContent) {
           await this.feishu.replyMarkdown(source, replyContent + `\n\n---\n❌ ${err}`);
