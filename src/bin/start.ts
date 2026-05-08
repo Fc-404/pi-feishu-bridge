@@ -44,8 +44,7 @@ pi-feishu-bridge — 飞书 ↔ pi 编码助手实时对话桥接服务
   FEISHU_APP_ID             飞书 App ID (必填)
   FEISHU_APP_SECRET         飞书 App Secret (必填)
   PORT                      健康检查端口 (默认: 3700)
-  PI_FEISHU_WORKSPACES      工作目录 (默认: ./workspaces)
-  PI_FEISHU_SESSIONS        会话存储目录 (默认: ./sessions)
+  PI_FEISHU_SESSIONS        会话存储目录 (默认: ~/.pi/agent/sessions/)
   PI_FEISHU_MODEL           模型 (默认: google/gemini-2.5-flash-preview-05-06)
   PI_FEISHU_THINKING        thinking 等级 (默认: off)
   PI_FEISHU_TIMEOUT         超时毫秒 (默认: 300000)
@@ -86,7 +85,6 @@ if (flags["export-env"]) {
     ["PI_FEISHU_THINKING", merged.thinkingLevel],
     ["PI_FEISHU_TIMEOUT", merged.timeout],
     ["PI_FEISHU_LOG_LEVEL", merged.logLevel],
-    ["PI_FEISHU_WORKSPACES", merged.workspacesDir],
     ["PI_FEISHU_SESSIONS", merged.sessionsDir],
   ];
 

@@ -458,8 +458,7 @@ export default function (pi: ExtensionAPI) {
         `  port              = ${merged.port}`,
         `  timeout           = ${merged.timeout}ms`,
         `  log_level         = ${merged.logLevel}`,
-        `  workspaces_dir    = ${merged.workspacesDir}`,
-        `  sessions_dir      = ${merged.sessionsDir}`,
+        `  sessions_dir      = ${merged.sessionsDir || "(默认 ~/.pi/agent/sessions/)"}`,
         "",
         "**运行方式:**",
         "  /feishu-daemon     后台守护进程（推荐！）",
@@ -471,53 +470,38 @@ export default function (pi: ExtensionAPI) {
     },
   });
 
-  // ─── /feishu-prompt ─────────────────────────────────────
-  pi.registerCommand("feishu-prompt", {
-    description: "查看/编辑提示词文件 (.pi/feishu-prompt.md)",
+  // ─── /feishu-agents ─────────────────────────────────────
+  pi.registerCommand("feishu-agents", {
+    description: "查看 AGENTS.md（自动加载的全局提示词）",
     handler: async (_args, ctx) => {
-      const { readFileSync, existsSync, writeFileSync, mkdirSync } = await import("node:fs");
+      const { readFileSync, existsSync } = await import("node:fs");
+      const { homedir } = await import("node:os");
       const { resolve } = await import("node:path");
-      const dir = resolve(".pi");
-      mkdirSync(dir, { recursive: true });
-      const promptFile = resolve(dir, "feishu-prompt.md");
 
-      if (!existsSync(promptFile)) {
-        writeFileSync(promptFile, `# 飞书机器人提示词
+      // 搜索 AGENTS.md：项目根目录 → 父目录 → 全局
+      const candidates = [
+        resolve("AGENTS.md"),
+        resolve(".pi/AGENTS.md"),
+        `${homedir()}/.pi/agent/AGENTS.md`,
+      ];
 
-在这里定义机器人的行为、性格、规则等。
-每次对话都会自动附加此内容。
-`, "utf-8");
+      for (const file of candidates) {
+        if (existsSync(file)) {
+          const content = readFileSync(file, "utf-8");
+          ctx.ui.notify(
+            `📝 **AGENTS.md**: ${file}\n\n\`\`\`\n${content.slice(0, 1500)}\n\`\`\`\n\nAGENTS.md 在飞书和本地 pi 中共享，自动加载。`,
+            "info",
+          );
+          return;
+        }
       }
 
-      const content = readFileSync(promptFile, "utf-8");
       ctx.ui.notify(
-        `📝 **提示词文件**: .pi/feishu-prompt.md\n\n\`\`\`\n${content.slice(0, 1500)}\n\`\`\`\n\n编辑后重启桥接生效 (/feishu-stop → /feishu-daemon)`,
-        "info",
-      );
-    },
-  });
-
-  // ─── /feishu-memory ──────────────────────────────────────
-  pi.registerCommand("feishu-memory", {
-    description: "查看/编辑记忆文件 (.pi/feishu-memory.md)",
-    handler: async (_args, ctx) => {
-      const { readFileSync, existsSync, writeFileSync, mkdirSync } = await import("node:fs");
-      const { resolve } = await import("node:path");
-      const dir = resolve(".pi");
-      mkdirSync(dir, { recursive: true });
-      const memoryFile = resolve(dir, "feishu-memory.md");
-
-      if (!existsSync(memoryFile)) {
-        writeFileSync(memoryFile, `# 飞书机器人记忆
-
-在这里存储需要长期保留的信息。
-机器人可以读取和更新此文件。
-`, "utf-8");
-      }
-
-      const content = readFileSync(memoryFile, "utf-8");
-      ctx.ui.notify(
-        `🧠 **记忆文件**: .pi/feishu-memory.md\n\n\`\`\`\n${content.slice(0, 1500)}\n\`\`\`\n\n编辑后重启桥接生效。也可以在飞书中让机器人帮你更新记忆。`,
+        "ℹ️ 未找到 AGENTS.md\n\n" +
+        "创建方式:\n" +
+        "  touch AGENTS.md           # 项目级\n" +
+        `  touch ${homedir()}/.pi/agent/AGENTS.md  # 全局\n\n` +
+        "AGENTS.md 会自动加载到系统提示词中。",
         "info",
       );
     },
@@ -596,7 +580,7 @@ export default function (pi: ExtensionAPI) {
   console.log("[feishu-bridge] 扩展已加载");
   console.log("[feishu-bridge] 可用命令: /feishu-status, /feishu-start, /feishu-stop, /feishu-daemon,");
   console.log("[feishu-bridge]           /feishu-install, /feishu-uninstall, /feishu-logs,");
-  console.log("[feishu-bridge]           /feishu-config, /feishu-set, /feishu-prompt, /feishu-memory");
+  console.log("[feishu-bridge]           /feishu-config, /feishu-set, /feishu-agents");
 }
 
 function hide(val: string): string {

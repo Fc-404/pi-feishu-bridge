@@ -76,7 +76,12 @@ export class FeishuClient {
 
   /** 回复处理中提示 */
   async replyProcessing(source: FeishuSource): Promise<void> {
-    try { await this.channel.send(source.chatId, { text: "👀" }, { replyTo: source.messageId }); } catch { /* ignore */ }
+    try {
+      await this.channel.send(source.chatId, { text: "👀" }, { replyTo: source.messageId });
+      console.log(`[飞书] 👀 已发送`);
+    } catch (err) {
+      console.error(`[飞书] 👀 发送失败:`, err);
+    }
   }
 
   /** 回复完成标记 */
@@ -106,10 +111,19 @@ export class FeishuClient {
   async replyMarkdown(source: FeishuSource, markdown: string): Promise<string | undefined> {
     try {
       const r = await this.channel.send(source.chatId, { markdown }, { replyTo: source.messageId });
+      console.log(`[飞书] Markdown 回复成功: messageId=${r.messageId?.slice(0, 20)}...`);
       return r.messageId;
     } catch (err) {
-      console.error("[飞书] 发送 Markdown 失败:", err);
-      return undefined;
+      console.log(`[飞书] ❌ Markdown 发送失败:`, err);
+      console.log(`[飞书] 尝试纯文本回复作为降级...`);
+      try {
+        const r = await this.channel.send(source.chatId, { text: markdown.slice(0, 2000) }, { replyTo: source.messageId });
+        console.log(`[飞书] 纯文本降级成功`);
+        return r.messageId;
+      } catch (textErr) {
+        console.log(`[飞书] ❌ 纯文本降级也失败:`, textErr);
+        return undefined;
+      }
     }
   }
 

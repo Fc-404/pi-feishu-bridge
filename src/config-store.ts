@@ -1,7 +1,8 @@
 /**
  * 配置文件读写
- * 全局: ~/.pi/agent/feishu-config.json
- * 项目: .pi/feishu-config.json (覆盖全局)
+ *
+ * 简化版：不再需要 workspaces_dir / cwd 等隔离配置。
+ * 工作目录固定为 process.cwd()，与 pi 交互模式一致。
  */
 
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
@@ -17,9 +18,7 @@ export interface ConfigFile {
   port?: number;
   timeout?: number;
   log_level?: string;
-  workspaces_dir?: string;
   sessions_dir?: string;
-  cwd?: string;
 }
 
 /** 配置键的描述和类型 */
@@ -31,9 +30,7 @@ export const CONFIG_KEYS: Record<string, { description: string; type: "string" |
   port:              { description: "健康检查端口", type: "number" },
   timeout:           { description: "超时毫秒", type: "number" },
   log_level:         { description: "日志等级", type: "enum", enum: ["debug", "info", "warn", "error"] },
-  workspaces_dir:    { description: "工作目录", type: "string" },
-  sessions_dir:      { description: "会话存储目录", type: "string" },
-  cwd:               { description: "工作目录（文件操作路径）", type: "string" },
+  sessions_dir:      { description: "会话存储目录（默认 ~/.pi/agent/sessions）", type: "string" },
 };
 
 /** 获取配置文件路径 */
@@ -116,8 +113,6 @@ export function mergeWithEnv(file: ConfigFile): Record<string, string> {
     port:            process.env.PORT ?? String(file.port ?? "3700"),
     timeout:         process.env.PI_FEISHU_TIMEOUT ?? String(file.timeout ?? "300000"),
     logLevel:        process.env.PI_FEISHU_LOG_LEVEL ?? file.log_level ?? "info",
-    workspacesDir:   process.env.PI_FEISHU_WORKSPACES ?? file.workspaces_dir ?? ".pi/workspaces",
-    sessionsDir:     process.env.PI_FEISHU_SESSIONS ?? file.sessions_dir ?? ".pi/sessions",
-    cwd:             process.env.PI_FEISHU_CWD ?? file.cwd ?? process.cwd(),
+    sessionsDir:     process.env.PI_FEISHU_SESSIONS ?? file.sessions_dir ?? "",
   };
 }

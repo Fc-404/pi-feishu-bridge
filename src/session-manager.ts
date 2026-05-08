@@ -1,8 +1,9 @@
 /**
- * pi AgentSession 管理器
- * 每个飞书用户/群聊一个独立 session，自动持久化
- * 支持 /new(重建) /stop(中止) /compact(压缩) 命令
- * 支持提示词文件 + 记忆文件
+ * 单例 pi AgentSession 管理器
+ *
+ * - 所有飞书消息共享同一个 pi session
+ * - Session 存储在 ~/.pi/agent/sessions/--home-feishu--/feishu.jsonl
+ * - /new 归档旧会话（加时间戳），创建新会话，不删除任何数据
  */
 
 import {
@@ -12,214 +13,187 @@ import {
   ModelRegistry,
 } from "@mariozechner/pi-coding-agent";
 import type { AgentSession } from "@mariozechner/pi-coding-agent";
-import { mkdirSync, existsSync, readFileSync, writeFileSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { mkdirSync, existsSync, readdirSync, readFileSync, writeFileSync, renameSync } from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
 import type { BridgeConfig } from "./config.js";
+import { oneCost } from "./pricing.js";
 
-export interface SessionEntry {
-  session: AgentSession;
-  createdAt: number;
-  lastUsedAt: number;
-  chatId: string;
-  isProcessing: boolean;
-  abortCurrent?: () => void;
-}
-
-/** 提示词文件和记忆文件的路径 */
-function getDataFiles() {
-  const dir = resolve(".pi");
-  mkdirSync(dir, { recursive: true });
-  return {
-    promptFile: join(dir, "feishu-prompt.md"),
-    memoryFile: join(dir, "feishu-memory.md"),
-  };
-}
-
-/** 读取提示词文件 */
-export function readPromptFile(): string {
-  const { promptFile } = getDataFiles();
-  try {
-    if (existsSync(promptFile)) {
-      return readFileSync(promptFile, "utf-8").trim();
-    }
-  } catch { /* 忽略 */ }
-  return "";
-}
-
-/** 读取记忆文件 */
-export function readMemoryFile(): string {
-  const { memoryFile } = getDataFiles();
-  try {
-    if (existsSync(memoryFile)) {
-      return readFileSync(memoryFile, "utf-8").trim();
-    }
-  } catch { /* 忽略 */ }
-  return "";
-}
-
-/** 写入记忆文件 */
-export function writeMemoryFile(content: string): void {
-  const { memoryFile } = getDataFiles();
-  try {
-    writeFileSync(memoryFile, content, "utf-8");
-  } catch (err) {
-    console.error("[记忆文件] 写入失败:", err);
-  }
-}
+const FEISHU_SESSION_DIR = "--home-feishu--";
+const FEISHU_SESSION_FILE = "feishu.jsonl";
 
 export class PiSessionManager {
-  private sessions = new Map<string, SessionEntry>();
+  private session: AgentSession | null = null;
+  private sessionFile: string = "";
+  private isProcessing = false;
+  private abortCurrent?: () => void;
+  /** 最近一次 agent_end 事件的 messages，用于统计 */
+  private lastMessages: any[] | null = null;
   private authStorage: AuthStorage;
   private modelRegistry: ModelRegistry;
 
   constructor(private config: BridgeConfig) {
-    mkdirSync(config.sessionsDir, { recursive: true });
-    mkdirSync(config.workspacesDir, { recursive: true });
-
     this.authStorage = AuthStorage.create();
     this.modelRegistry = ModelRegistry.create(this.authStorage);
   }
 
-  /** 构造带提示词和记忆的消息 */
-  buildMessage(userText: string): string {
-    const parts: string[] = [];
-
-    const prompt = readPromptFile();
-    if (prompt) {
-      parts.push(prompt);
-    }
-
-    const memory = readMemoryFile();
-    if (memory) {
-      parts.push(`---\n## 记忆文件 (可读写)\n\n${memory}\n\n---\n`);
-    }
-
-    parts.push(userText);
-    return parts.join("\n\n");
+  /** 获取或创建飞书 session */
+  async getSession(): Promise<AgentSession> {
+    if (this.session) return this.session;
+    return this.createSession();
   }
 
-  /** 获取或创建用户的 pi session */
-  async getOrCreate(sessionKey: string, chatId: string): Promise<AgentSession> {
-    const existing = this.sessions.get(sessionKey);
-    if (existing) {
-      existing.lastUsedAt = Date.now();
-      return existing.session;
+  /** /new：归档旧会话，创建新会话（不删除任何数据） */
+  async resetSession(): Promise<{ success: boolean; error?: string }> {
+    // 中止当前处理
+    if (this.isProcessing && this.abortCurrent) {
+      this.abortCurrent();
     }
 
-    const session = await this.createNewSession(sessionKey);
-    this.sessions.set(sessionKey, {
-      session,
-      createdAt: Date.now(),
-      lastUsedAt: Date.now(),
-      chatId,
-      isProcessing: false,
-    });
-    return session;
-  }
+    // 释放当前 session
+    if (this.session) {
+      this.session.dispose();
+      this.session = null;
+      this.isProcessing = false;
+    }
 
-  /** 销毁并重建 session（/new） */
-  async resetSession(sessionKey: string): Promise<{ success: boolean; error?: string }> {
-    const entry = this.sessions.get(sessionKey);
-    if (entry) {
-      if (entry.isProcessing && entry.abortCurrent) {
-        entry.abortCurrent();
+    // 归档旧会话文件（如果存在且有内容）
+    if (this.sessionFile && existsSync(this.sessionFile)) {
+      const content = readFileSync(this.sessionFile, "utf-8").trim();
+      if (content) {
+        const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
+        const archived = this.sessionFile.replace(".jsonl", `_${timestamp}.jsonl`);
+        try {
+          renameSync(this.sessionFile, archived);
+          console.log(`[会话] 已归档: ${archived}`);
+        } catch (err) {
+          return { success: false, error: `归档失败: ${err}` };
+        }
       }
-      entry.session.dispose();
-      this.sessions.delete(sessionKey);
     }
 
-    // 清空文件内容代替删除，避免文件句柄冲突
-    const sessionFile = join(this.config.sessionsDir, `${sessionKey}.jsonl`);
-    try {
-      writeFileSync(sessionFile, "", "utf-8");
-    } catch (err) {
-      return { success: false, error: `无法重置会话文件: ${err}` };
-    }
     return { success: true };
   }
 
-  /** 仅中止当前处理，不清除上下文（/stop） */
-  abortProcessing(sessionKey: string): boolean {
-    const entry = this.sessions.get(sessionKey);
-    if (entry && entry.isProcessing && entry.abortCurrent) {
-      entry.abortCurrent();
+  /** 中止当前处理（对应 /stop 命令） */
+  abortProcessing(): boolean {
+    if (this.isProcessing && this.abortCurrent) {
+      this.abortCurrent();
       return true;
     }
     return false;
   }
 
-  /** 压缩上下文（/compact） */
-  async compactSession(sessionKey: string): Promise<{ success: boolean; error?: string }> {
-    const entry = this.sessions.get(sessionKey);
-    if (!entry) {
+  /** 压缩上下文（对应 /compact 命令） */
+  async compactSession(): Promise<{ success: boolean; error?: string }> {
+    if (!this.session) {
       return { success: false, error: "没有活跃的会话" };
     }
     try {
-      await entry.session.compact();
+      await this.session.compact();
       return { success: true };
     } catch (err) {
       return { success: false, error: String(err) };
     }
   }
 
-  /** 发送 prompt 并监听结果 */
+  /** 发送 prompt 并监听结果（飞书特有流式回调） */
   async prompt(
-    session: AgentSession,
     text: string,
     callbacks: {
       onDelta: (delta: string) => void;
+      /** 工具执行事件: start/end, 参数 toolName, args/result */
+      onToolEvent?: (event: { type: "tool_start" | "tool_end"; toolName: string; detail: string }) => void;
       onDone: () => void;
       onError: (err: string) => void;
     },
-    sessionKey?: string,
   ): Promise<{ abort: () => void }> {
-    const { onDelta, onDone, onError } = callbacks;
+    const session = await this.getSession();
+    const { onDelta, onToolEvent, onDone, onError } = callbacks;
     let finished = false;
 
-    const entry = sessionKey ? this.sessions.get(sessionKey) : undefined;
-    if (entry) entry.isProcessing = true;
+    this.isProcessing = true;
+
+    // 空闲超时：每次有活动重置
+    let idleTimer: ReturnType<typeof setTimeout> | null = null;
+    let lastActivity = Date.now();
+
+    const resetIdleTimer = () => {
+      lastActivity = Date.now();
+      if (idleTimer) clearTimeout(idleTimer);
+      idleTimer = setTimeout(() => {
+        if (finished) return;
+        const elapsed = Date.now() - lastActivity;
+        if (elapsed >= this.config.timeout) {
+          finished = true;
+          unsub();
+          this.isProcessing = false;
+          session.abort();
+          onError(`⏱️ 任务已空闲 ${(this.config.timeout / 1000).toFixed(0)} 秒无响应，已中止。可发送 /new 重建会话`);
+        }
+      }, this.config.timeout + 100); // 多等一小会儿确保空闲检测准确
+    };
+
+    resetIdleTimer();
 
     const unsub = session.subscribe((event) => {
       if (finished) return;
+      resetIdleTimer(); // 任何事件都重置空闲计时器
 
       switch (event.type) {
         case "message_update":
-          if (
-            "assistantMessageEvent" in event &&
-            event.assistantMessageEvent?.type === "text_delta"
-          ) {
+          if ("assistantMessageEvent" in event &&
+              event.assistantMessageEvent?.type === "text_delta") {
             onDelta(event.assistantMessageEvent.delta);
           }
           break;
+
+        case "tool_execution_start": {
+          const args = (event as any).args || {};
+          const argStr = Object.values(args).filter(Boolean).join(" ").slice(0, 80);
+          onToolEvent?.({ type: "tool_start", toolName: event.toolName, detail: argStr });
+          break;
+        }
+
+        case "tool_execution_end": {
+          const isErr = (event as any).isError;
+          onToolEvent?.({ type: "tool_end", toolName: event.toolName, detail: isErr ? "❌" : "✅" });
+          break;
+        }
+
+        case "turn_start":
+          onToolEvent?.({ type: "tool_start", toolName: "💭", detail: "LLM 正在思考分析..." });
+          break;
+
+        case "turn_end":
+          onToolEvent?.({ type: "tool_end", toolName: "💭", detail: "" });
+          break;
+
         case "agent_end":
           finished = true;
           unsub();
-          if (entry) entry.isProcessing = false;
+          if (idleTimer) clearTimeout(idleTimer);
+          this.isProcessing = false;
+          if ("messages" in event) {
+            this.lastMessages = (event as any).messages;
+          }
           onDone();
-          break;
+          return;
       }
     });
-
-    const timeout = setTimeout(() => {
-      if (finished) return;
-      finished = true;
-      unsub();
-      if (entry) entry.isProcessing = false;
-      session.abort();
-      onError("⏱️ 请求超时，请重试或使用 /new 重建会话");
-    }, this.config.timeout);
 
     const abortFn = () => {
       if (finished) return;
       finished = true;
       unsub();
-      clearTimeout(timeout);
-      if (entry) entry.isProcessing = false;
+      if (idleTimer) clearTimeout(idleTimer);
+      this.isProcessing = false;
       session.abort();
     };
-    if (entry) entry.abortCurrent = abortFn;
+    this.abortCurrent = abortFn;
 
     try {
+      console.log(`[prompt] 发送中... 流式: ${session.isStreaming}`);
       if (session.isStreaming) {
         await session.steer(text);
       } else {
@@ -229,8 +203,8 @@ export class PiSessionManager {
       if (!finished) {
         finished = true;
         unsub();
-        clearTimeout(timeout);
-        if (entry) entry.isProcessing = false;
+        if (idleTimer) clearTimeout(idleTimer);
+        this.isProcessing = false;
         const errMsg = String(err);
         if (errMsg.includes("context") || errMsg.includes("token") || errMsg.includes("length")) {
           onError("📦 上下文已满，请发送 /new 开始新会话，或发送 /compact 压缩后继续");
@@ -240,51 +214,107 @@ export class PiSessionManager {
       }
       return { abort: () => {} };
     } finally {
-      clearTimeout(timeout);
+      if (idleTimer) clearTimeout(idleTimer);
     }
 
     return { abort: abortFn };
   }
 
-  private async createNewSession(sessionKey: string): Promise<AgentSession> {
-    // 工作目录：优先用配置的 cwd，否则用用户沙箱
-    const workDir = this.config.cwd || join(this.config.workspacesDir, sessionKey);
-    mkdirSync(workDir, { recursive: true });
+  /** 计算当日所有会话总费用 */
+  calcTodayCost(): number {
+    const today = new Date().toISOString().slice(0, 10);
+    let total = 0;
+    try {
+      const dir = this.getSessionDir();
+      if (!existsSync(dir)) return 0;
+      for (const f of readdirSync(dir)) {
+        if (!f.endsWith(".jsonl")) continue;
+        try {
+          for (const line of readFileSync(join(dir, f), "utf-8").split("\n")) {
+            if (!line.trim()) continue;
+            const e = JSON.parse(line);
+            if (e.type !== "message" || e.message?.role !== "assistant") continue;
+            const ts = e.timestamp || e.message?.timestamp;
+            if (!ts || !new Date(ts).toISOString().startsWith(today)) continue;
+            const u = e.message.usage;
+            if (!u) continue;
+            total += oneCost(e.message.model || "", u.input || 0, u.output || 0, u.cacheRead || 0);
+          }
+        } catch {}
+      }
+    } catch {}
+    return Math.round(total * 1_000_000) / 1_000_000;
+  }
 
-    const sessionFile = join(this.config.sessionsDir, `${sessionKey}.jsonl`);
+  /** 获取当前会话用量统计 */
+  getUsageStats(): { totalInput: number; totalOutput: number; totalCache: number; turns: number; cost: number } {
+    const msgs = this.lastMessages;
+    if (!msgs || msgs.length === 0) return { totalInput: 0, totalOutput: 0, totalCache: 0, turns: 0, cost: 0 };
+
+    let totalInput = 0, totalOutput = 0, totalCache = 0, turns = 0;
+    let curCost = 0;
+    let lastModel = "";
+    for (const m of msgs) {
+      if (m.role === "assistant") {
+        turns++;
+        lastModel = m.model || lastModel;
+        if (m.usage) {
+          const u = m.usage;
+          totalInput += (u.input || 0) + (u.cacheRead || 0);
+          totalOutput += u.output || 0;
+          totalCache += u.cacheRead || 0;
+          // 用与 cny-cost 相同的定价公式
+          curCost += oneCost(lastModel, u.input || 0, u.output || 0, u.cacheRead || 0);
+        }
+      }
+    }
+    // 保留 6 位小数
+    curCost = Math.round(curCost * 1_000_000) / 1_000_000;
+    return { totalInput, totalOutput, totalCache, turns, cost: curCost };
+  }
+
+  getStatus() {
+    return {
+      hasSession: this.session !== null,
+      isProcessing: this.isProcessing,
+      sessionFile: this.sessionFile || null,
+    };
+  }
+
+  dispose() {
+    if (this.session) {
+      this.session.dispose();
+      this.session = null;
+    }
+  }
+
+  // ─── 私有方法 ──────────────────────────────────────────
+
+  /** 飞书 session 存储目录：~/.pi/agent/sessions/--home-feishu--/ */
+  private getSessionDir(): string {
+    if (this.config.sessionsDir) return this.config.sessionsDir;
+    return join(homedir(), ".pi", "agent", "sessions", FEISHU_SESSION_DIR);
+  }
+
+  private async createSession(): Promise<AgentSession> {
+    const workDir = process.cwd();
+
+    const sessionDir = this.getSessionDir();
+    mkdirSync(sessionDir, { recursive: true });
+
+    this.sessionFile = join(sessionDir, FEISHU_SESSION_FILE);
 
     const { session } = await createAgentSession({
       cwd: workDir,
-      sessionManager: SessionManager.open(sessionFile),
+      sessionManager: SessionManager.open(this.sessionFile),
       authStorage: this.authStorage,
       modelRegistry: this.modelRegistry,
       tools: ["read", "bash", "edit", "write", "grep", "find", "ls"],
     });
 
+    this.session = session;
+    console.log(`[会话] 飞书 session: ${this.sessionFile}`);
+
     return session;
-  }
-
-  getStats() {
-    return {
-      activeSessions: this.sessions.size,
-      sessions: Array.from(this.sessions.entries()).map(([key, entry]) => ({
-        key,
-        chatId: entry.chatId,
-        createdAt: new Date(entry.createdAt).toISOString(),
-        lastUsedAt: new Date(entry.lastUsedAt).toISOString(),
-        isProcessing: entry.isProcessing,
-      })),
-    };
-  }
-
-  isProcessing(sessionKey: string): boolean {
-    return this.sessions.get(sessionKey)?.isProcessing ?? false;
-  }
-
-  dispose() {
-    for (const entry of this.sessions.values()) {
-      entry.session.dispose();
-    }
-    this.sessions.clear();
   }
 }
