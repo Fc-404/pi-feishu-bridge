@@ -75,18 +75,66 @@ export class FeishuClient {
 
   // ─── 飞书表情反应（Emoji Reaction） ───────────────────
 
-  /** 完成时加 👏 表情 */
-  async reactDone(messageId: string): Promise<void> {
-    try {
-      await this.channel.addReaction(messageId, "CLAP");
-    } catch {}
+  /** 状态表情映射，逐个尝试直到成功 */
+  private async tryReactions(messageId: string, types: string[]): Promise<boolean> {
+    for (const t of types) {
+      try {
+        await this.channel.addReaction(messageId, t);
+        console.log(`[reaction] ${t} OK`);
+        return true;
+      } catch {
+        console.log(`[reaction] ${t} 不支持`);
+      }
+    }
+    return false;
   }
 
-  /** 错误时加 😢 表情 */
+  /** 移除已添加的表情 */
+  private async removeReactions(messageId: string, types: string[]): Promise<void> {
+    for (const t of types) {
+      try { await this.channel.removeReactionByEmoji(messageId, t); } catch {}
+    }
+  }
+
+  // 缓存每种状态当前使用的 emoji_type
+  private processingEmoji = "";
+  private toolEmoji = "";
+
+  /** 标记处理中 */
+  async reactProcessing(messageId: string): Promise<void> {
+    if (this.processingEmoji) {
+      try { await this.channel.addReaction(messageId, this.processingEmoji); } catch {}
+      return;
+    }
+    // 首次：逐个尝试找到支持的
+    const found = await this.tryReactions(messageId, ["SPARKLE", "STAR", "CLOCK", "HOURGLASS"]);
+    if (found) this.processingEmoji = "SPARKLE";
+  }
+
+  /** 标记正在执行命令 */
+  async reactToolRunning(messageId: string): Promise<void> {
+    // 先移除处理中表情
+    if (this.processingEmoji) {
+      try { await this.channel.removeReactionByEmoji(messageId, this.processingEmoji); } catch {}
+    }
+    if (this.toolEmoji) {
+      try { await this.channel.addReaction(messageId, this.toolEmoji); } catch {}
+      return;
+    }
+    const found = await this.tryReactions(messageId, ["FIRE", "GEAR", "ROCKET", "ZAP"]);
+    if (found) this.toolEmoji = "FIRE";
+  }
+
+  /** 标记完成 */
+  async reactDone(messageId: string): Promise<void> {
+    await this.removeReactions(messageId, [this.processingEmoji, this.toolEmoji].filter(Boolean));
+    await this.tryReactions(messageId, ["CLAP"]);
+  }
+
+  /** 标记错误 */
   async reactError(messageId: string): Promise<void> {
-    try {
-      await this.channel.addReaction(messageId, "CRY");
-    } catch {}
+    await this.removeReactions(messageId, [this.processingEmoji, this.toolEmoji].filter(Boolean));
+    await this.tryReactions(messageId, ["CRY"]);
   }
 
   // ─── 文本回复（状态标记） ───────────────────────────────

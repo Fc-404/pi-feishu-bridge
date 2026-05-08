@@ -145,15 +145,19 @@ export class BridgeServer {
       return;
     }
 
-    // 👀 文本 + 完成后 👏/😢 表情
+    // 全是表情反应，无文本回复
     console.log(`[发送] 正在发送给 LLM: ${text.slice(0, 60)}`);
-    await this.feishu.replyProcessing(source);
+    await this.feishu.reactProcessing(source.messageId);
 
-    // 收集 AI 回复
     let replyContent = "";
 
     await this.sessionManager.prompt(text, {
       onDelta: (delta: string) => { replyContent += delta; },
+      onToolEvent: async (evt) => {
+        if (evt.type === "tool_start") {
+          await this.feishu.reactToolRunning(source.messageId);
+        }
+      },
       onDone: async () => {
         console.log(`[完成] AI 回复长度: ${replyContent.length} 字符`);
         // 👏 表情标记完成
