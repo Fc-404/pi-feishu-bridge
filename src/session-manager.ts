@@ -106,8 +106,8 @@ export class PiSessionManager {
     text: string,
     callbacks: {
       onDelta: (delta: string) => void;
-      /** 工具执行事件: start/end, 参数 toolName, args/result */
-      onToolEvent?: (event: { type: "tool_start" | "tool_end"; toolName: string; detail: string }) => void;
+      /** 工具执行事件: start/end/thinking, 参数 toolName, args/result */
+      onToolEvent?: (event: { type: "tool_start" | "tool_end" | "thinking"; toolName: string; detail: string }) => void;
       onDone: () => void;
       onError: (err: string) => void;
     },
@@ -168,6 +168,10 @@ export class PiSessionManager {
           onToolEvent?.({ type: "tool_end", toolName: event.toolName, detail: isErr ? "❌" : "✅" });
           break;
         }
+
+        case "turn_start":
+          onToolEvent?.({ type: "thinking", toolName: "", detail: "" });
+          break;
 
         case "agent_end":
           finished = true;

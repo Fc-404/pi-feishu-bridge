@@ -96,34 +96,40 @@ export class FeishuClient {
     }
   }
 
-  // 基于飞书官方文档的 emoji_type 映射
-  // 来源: https://open.feishu.cn/document/server-docs/im-v1/message-reaction/emoji-list
-  private processingEmoji = "OneSecond";   // ⏳ 等待中
-  private toolEmoji = "Fire";              // 🔥 执行中
-  private doneEmoji = "CLAP";              // 👏 完成
-  private errorEmoji = "CRY";              // 😢 错误
+  // ─── 用户指定的表情映射 ──────────────────────────────
+  // Get              → 已收到
+  // StatusFlashOfInspiration → LLM 思考中
+  // Typing           → 执行命令
+  // DONE             → 完成
+  // ClownFace        → 错误
 
-  /** 标记处理中 ⏳ */
+  /** 已收到 Get */
   async reactProcessing(messageId: string): Promise<void> {
-    try { await this.channel.addReaction(messageId, this.processingEmoji); } catch {}
+    try { await this.channel.addReaction(messageId, "Get"); } catch {}
   }
 
-  /** 标记正在执行命令 🔥 */
+  /** LLM 思考中 StatusFlashOfInspiration */
+  async reactThinking(messageId: string): Promise<void> {
+    await this.removeReactions(messageId, ["Get", "Typing"]);
+    try { await this.channel.addReaction(messageId, "StatusFlashOfInspiration"); } catch {}
+  }
+
+  /** 执行命令 Typing */
   async reactToolRunning(messageId: string): Promise<void> {
-    await this.removeReactions(messageId, [this.processingEmoji]);
-    try { await this.channel.addReaction(messageId, this.toolEmoji); } catch {}
+    await this.removeReactions(messageId, ["Get", "StatusFlashOfInspiration"]);
+    try { await this.channel.addReaction(messageId, "Typing"); } catch {}
   }
 
-  /** 标记完成 👏 */
+  /** 完成 DONE */
   async reactDone(messageId: string): Promise<void> {
-    await this.removeReactions(messageId, [this.processingEmoji, this.toolEmoji]);
-    try { await this.channel.addReaction(messageId, this.doneEmoji); } catch {}
+    await this.removeReactions(messageId, ["Get", "StatusFlashOfInspiration", "Typing"]);
+    try { await this.channel.addReaction(messageId, "DONE"); } catch {}
   }
 
-  /** 标记错误 😢 */
+  /** 错误 ClownFace */
   async reactError(messageId: string): Promise<void> {
-    await this.removeReactions(messageId, [this.processingEmoji, this.toolEmoji]);
-    try { await this.channel.addReaction(messageId, this.errorEmoji); } catch {}
+    await this.removeReactions(messageId, ["Get", "StatusFlashOfInspiration", "Typing"]);
+    try { await this.channel.addReaction(messageId, "ClownFace"); } catch {}
   }
 
   // ─── 文本回复（状态标记） ───────────────────────────────

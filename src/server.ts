@@ -145,17 +145,19 @@ export class BridgeServer {
       return;
     }
 
-    // 全是表情反应，无文本回复
+    // 纯表情反应：Get→StatusFlashOfInspiration→Typing→DONE/ClownFace
     console.log(`[发送] 正在发送给 LLM: ${text.slice(0, 60)}`);
-    await this.feishu.reactProcessing(source.messageId);
+    await this.feishu.reactProcessing(source.messageId);  // Get
 
     let replyContent = "";
 
     await this.sessionManager.prompt(text, {
       onDelta: (delta: string) => { replyContent += delta; },
       onToolEvent: async (evt) => {
-        if (evt.type === "tool_start") {
-          await this.feishu.reactToolRunning(source.messageId);
+        if (evt.type === "thinking") {
+          await this.feishu.reactThinking(source.messageId);  // StatusFlashOfInspiration
+        } else if (evt.type === "tool_start") {
+          await this.feishu.reactToolRunning(source.messageId);  // Typing
         }
       },
       onDone: async () => {
