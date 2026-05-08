@@ -73,85 +73,38 @@ export class FeishuClient {
     console.log("[飞书] WebSocket 事件订阅已连接");
   }
 
-  // ─── 飞书表情反应（Emoji Reaction） ───────────────────
+  // ─── 链式表情反应 ──────────────────────────────────────
+  // Get                  → 用户消息（已收到）
+  // StatusFlashOfInspiration → bot 回复（LLM 思考）
+  // Typing               → bot 回复（执行命令）
+  // DONE                 → bot 最终回复（完成）
+  // ClownFace            → bot 回复（错误）
 
-  /** 状态表情映射，逐个尝试直到成功 */
-  private async tryReactions(messageId: string, types: string[]): Promise<boolean> {
-    for (const t of types) {
-      try {
-        await this.channel.addReaction(messageId, t);
-        console.log(`[reaction] ${t} OK`);
-        return true;
-      } catch {
-        console.log(`[reaction] ${t} 不支持`);
-      }
-    }
-    return false;
+  /** 给指定消息加表情 */
+  async addReaction(msgId: string, emoji: string): Promise<void> {
+    try { await this.channel.addReaction(msgId, emoji); } catch {}
   }
 
-  /** 移除已添加的表情 */
-  private async removeReactions(messageId: string, types: string[]): Promise<void> {
-    for (const t of types) {
-      try { await this.channel.removeReactionByEmoji(messageId, t); } catch {}
-    }
+  /** 给用户消息加 Get（已收到） */
+  async reactGet(source: FeishuSource): Promise<void> {
+    await this.addReaction(source.messageId, "Get");
   }
 
-  // ─── 用户指定的表情映射 ──────────────────────────────
-  // Get              → 已收到
-  // StatusFlashOfInspiration → LLM 思考中
-  // Typing           → 执行命令
-  // DONE             → 完成
-  // ClownFace        → 错误
-
-  /** 已收到 Get */
-  async reactProcessing(messageId: string): Promise<void> {
-    try { await this.channel.addReaction(messageId, "Get"); } catch {}
+  /** 发送文本回复并在其上挂表情，返回消息 ID */
+  async replyWithReaction(source: FeishuSource, text: string, emoji: string): Promise<string | undefined> {
+    const msgId = await this.replyMarkdown(source, text);
+    if (msgId) await this.addReaction(msgId, emoji);
+    return msgId;
   }
 
-  /** LLM 思考中 StatusFlashOfInspiration */
-  async reactThinking(messageId: string): Promise<void> {
-    await this.removeReactions(messageId, ["Get", "Typing"]);
-    try { await this.channel.addReaction(messageId, "StatusFlashOfInspiration"); } catch {}
+  /** 给指定回复消息加 DONE 完成表情 */
+  async reactDone(replyMsgId: string): Promise<void> {
+    await this.addReaction(replyMsgId, "DONE");
   }
 
-  /** 执行命令 Typing */
-  async reactToolRunning(messageId: string): Promise<void> {
-    await this.removeReactions(messageId, ["Get", "StatusFlashOfInspiration"]);
-    try { await this.channel.addReaction(messageId, "Typing"); } catch {}
-  }
-
-  /** 完成 DONE */
-  async reactDone(messageId: string): Promise<void> {
-    await this.removeReactions(messageId, ["Get", "StatusFlashOfInspiration", "Typing"]);
-    try { await this.channel.addReaction(messageId, "DONE"); } catch {}
-  }
-
-  /** 错误 ClownFace */
-  async reactError(messageId: string): Promise<void> {
-    await this.removeReactions(messageId, ["Get", "StatusFlashOfInspiration", "Typing"]);
-    try { await this.channel.addReaction(messageId, "ClownFace"); } catch {}
-  }
-
-  // ─── 文本回复（状态标记） ───────────────────────────────
-
-  /** 回复处理中提示 */
-  async replyProcessing(source: FeishuSource): Promise<void> {
-    try {
-      await this.channel.send(source.chatId, { text: "👀" }, { replyTo: source.messageId });
-      console.log(`[飞书] 👀 已发送`);
-    } catch (err) {
-      console.error(`[飞书] 👀 发送失败:`, err);
-    }
-  }
-
-  /** 回复完成标记 */
-  async replyDone(source: FeishuSource): Promise<void> {
-    try { await this.channel.send(source.chatId, { text: "✅ 完成" }, { replyTo: source.messageId }); } catch { /* ignore */ }
-  }
-
-  /** 回复错误标记 */
-  async replyError(source: FeishuSource, errMsg: string): Promise<void> {
-    try { await this.channel.send(source.chatId, { text: `❌ ${errMsg}` }, { replyTo: source.messageId }); } catch { /* ignore */ }
+  /** 给指定回复消息加 ClownFace 错误表情 */
+  async reactError(replyMsgId: string): Promise<void> {
+    await this.addReaction(replyMsgId, "ClownFace");
   }
 
   // ─── 文本回复 ──────────────────────────────────────────

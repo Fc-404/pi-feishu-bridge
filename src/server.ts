@@ -145,39 +145,49 @@ export class BridgeServer {
       return;
     }
 
-    // 纯表情反应：Get→StatusFlashOfInspiration→Typing→DONE/ClownFace
+    // ─── 链式表情 ───
+    // 用户消息 → Get
+    // 思考中 → 文本回复 + StatusFlashOfInspiration
+    // 命令执行 → 文本回复 + Typing
+    // 完成 → AI 内容 + DONE
+    // 错误 → 错误信息 + ClownFace
+
     console.log(`[发送] 正在发送给 LLM: ${text.slice(0, 60)}`);
-    await this.feishu.reactProcessing(source.messageId);  // Get
+    await this.feishu.reactGet(source);  // Get 在用户消息上
 
     let replyContent = "";
+    let lastReplyId: string | undefined;
 
     await this.sessionManager.prompt(text, {
       onDelta: (delta: string) => { replyContent += delta; },
       onToolEvent: async (evt) => {
         if (evt.type === "thinking") {
-          await this.feishu.reactThinking(source.messageId);  // StatusFlashOfInspiration
+          lastReplyId = await this.feishu.replyWithReaction(
+            source, "💭 思考中...", "StatusFlashOfInspiration"
+          );
         } else if (evt.type === "tool_start") {
-          await this.feishu.reactToolRunning(source.messageId);  // Typing
+          lastReplyId = await this.feishu.replyWithReaction(
+            source, `🔧 **${evt.toolName}**: ${evt.detail}`, "Typing"
+          );
         }
       },
       onDone: async () => {
         console.log(`[完成] AI 回复长度: ${replyContent.length} 字符`);
-        // 👏 表情标记完成
-        await this.feishu.reactDone(source.messageId);
-        // AI 回复内容
         if (replyContent) {
-          await this.feishu.replyMarkdown(source, replyContent);
+          // 发送 AI 回复内容，在其上加 DONE
+          lastReplyId = await this.feishu.replyWithReaction(
+            source, replyContent, "DONE"
+          );
         }
       },
       onError: async (err: string) => {
         console.error(`[错误] ${err}`);
-        // 😢 表情标记错误
-        await this.feishu.reactError(source.messageId);
-        if (replyContent) {
-          await this.feishu.replyMarkdown(source, replyContent + `\n\n---\n❌ ${err}`);
-        } else {
-          await this.feishu.replyError(source, err);
-        }
+        const text = replyContent
+          ? replyContent + `\n\n---\n❌ ${err}`
+          : `❌ ${err}`;
+        lastReplyId = await this.feishu.replyWithReaction(
+          source, text, "ClownFace"
+        );
       },
     });
   }
