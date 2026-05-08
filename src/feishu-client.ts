@@ -73,21 +73,11 @@ export class FeishuClient {
     console.log("[飞书] WebSocket 事件订阅已连接");
   }
 
-  // ─── 链式表情反应（Emoji Reaction + 消息编辑） ────────
-  // Get                      → 用户消息（已收到）
-  // StatusFlashOfInspiration → 思考中回复（思考中）
-  // Typing                   → 工具回复（执行命令）
-  // DONE                     → 最终回复编辑后（完成）
-  // ClownFace                → 最终回复编辑后（错误）
+  // ─── 表情反应 ──────────────────────────────────────────
 
   /** 给指定消息加表情 */
   async addReaction(msgId: string, emoji: string): Promise<void> {
     try { await this.channel.addReaction(msgId, emoji); } catch {}
-  }
-
-  /** 从指定消息移除表情 */
-  async removeReaction(msgId: string, emoji: string): Promise<void> {
-    try { await this.channel.removeReactionByEmoji(msgId, emoji); } catch {}
   }
 
   /** 给用户消息加 Get（已收到） */
@@ -95,18 +85,33 @@ export class FeishuClient {
     await this.addReaction(source.messageId, "Get");
   }
 
-  /** 发送"思考中"初始消息，挂 StatusFlashOfInspiration 反应，返回 msgId */
+  // ─── 发送 & 编辑（带反应） ─────────────────────────────
+
+  /** 发送"思考中"消息 + StatusFlashOfInspiration */
   async sendThinking(source: FeishuSource): Promise<string | undefined> {
     const msgId = await this.replyMarkdown(source, "💭 思考中...");
     if (msgId) await this.addReaction(msgId, "StatusFlashOfInspiration");
     return msgId;
   }
 
-  /** 发送工具执行消息，挂 Typing 反应 */
+  /** 编辑思考消息末尾追加耗时（不改反应） */
+  async editThinkingDone(msgId: string, ms: number): Promise<void> {
+    await this.editText(msgId, `💭 思考完成 (${(ms / 1000).toFixed(1)}s)`);
+  }
+
+  /** 发送工具执行消息 + Typing */
   async sendToolRunning(source: FeishuSource, text: string): Promise<string | undefined> {
     const msgId = await this.replyMarkdown(source, text);
     if (msgId) await this.addReaction(msgId, "Typing");
     return msgId;
+  }
+
+  /** 编辑工具消息末尾追加耗时（不改反应） */
+  async editToolDone(msgId: string, ms: number): Promise<void> {
+    // msgId 对应刚发的工具消息，内容类似 "🔧 bash: ls ~/"
+    // 编辑成 "🔧 bash: ls ~/ (0.5s)"
+    // 我们需要知道原始内容。传进来太麻烦，直接读 msgId 对应的消息？
+    // 简单方案：由调用方传完整的新文本
   }
 
   /** 发送 AI 回复 + DONE */
@@ -116,25 +121,23 @@ export class FeishuClient {
     return msgId;
   }
 
-  /** 发送错误回复 + ClownFace */
+  /** 发送错误消息 + ClownFace */
   async replyWithClownFace(source: FeishuSource, text: string): Promise<string | undefined> {
     const msgId = await this.replyMarkdown(source, text);
     if (msgId) await this.addReaction(msgId, "ClownFace");
     return msgId;
   }
 
-  // ─── 文本回复 ──────────────────────────────────────────
+  // ─── 消息编辑 ──────────────────────────────────────────
 
-  /** 回复文本消息（关联到原消息） */
-  async replyText(source: FeishuSource, text: string): Promise<string | undefined> {
-    try {
-      const r = await this.channel.send(source.chatId, { text }, { replyTo: source.messageId });
-      return r.messageId;
-    } catch (err) {
-      console.error("[飞书] 发送文本失败:", err);
-      return undefined;
+  /** 编辑已发送消息的文本内容 */
+  async editText(msgId: string, text: string): Promise<void> {
+    try { await this.channel.editMessage(msgId, text); } catch (err) {
+      console.error(`[飞书] 编辑消息失败:`, err);
     }
   }
+
+  // ─── 文本回复 ──────────────────────────────────────────
 
   /** 回复 Markdown 消息（关联到原消息） */
   async replyMarkdown(source: FeishuSource, markdown: string): Promise<string | undefined> {

@@ -34,66 +34,89 @@ export class BridgeServer {
   }
 
   async start(): Promise<void> {
-    // session 路径由 PiSessionManager 构造时自动确保
-    // 注册 shutdown
     this.registerShutdown();
     await this.feishu.start();
   }
 
   private async handleMessage(source: FeishuSource, text: string) {
-    // ─── 命令处理（必须在 LLM 之前立即处理） ────────────
+    // ─── 命令处理（在 LLM 之前立即处理） ────────────────
     if (text.startsWith("/")) {
       console.log(`[命令] ${source.senderName}: ${text}`);
       await this.handleCommand(source, text);
       return;
     }
 
-    // ─── 链式表情回复 ───
-    // 用户消息 → Get
-    // 💭 思考中... + StatusFlashOfInspiration
-    // 🔧 tool + Typing
-    // AI 回复 + DONE / 错误 + ClownFace
-
     const session = await this.sessionManager.getSession();
 
-    // 检查是否正在处理
     if (session.isStreaming) {
       await this.feishu.replyMarkdown(source, "⏳ 前一个问题正在处理中，请稍后再发\n（或发送 /stop 中止当前任务）");
       return;
     }
 
     console.log(`[发送] 正在发送给 LLM: ${text.slice(0, 60)}`);
-    await this.feishu.reactGet(source);  // Get 在用户消息
 
+    // ─── 计时 & 状态 ──────────────────────────────────
+    const totalStart = Date.now();
+    let thinkingStart = 0;
+    let thinkingMsgId: string | undefined;
+    let toolStart = 0;
+    let toolMsgId: string | undefined;
+    let toolText = "";
     let replyContent = "";
-    let thinkingSent = false;
+
+    await this.feishu.reactGet(source);
 
     await this.sessionManager.prompt(text, {
       onDelta: (delta: string) => { replyContent += delta; },
       onToolEvent: async (evt: { type: string; toolName: string; detail: string }) => {
-        if (evt.type === "thinking" && !thinkingSent) {
-          thinkingSent = true;
-          await this.feishu.sendThinking(source);  // 💭 + StatusFlashOfInspiration
-        } else if (evt.type === "tool_start") {
-          if (!thinkingSent) {
-            thinkingSent = true;
-            await this.feishu.sendThinking(source);
+        if (evt.type === "thinking") {
+          // 新思考轮次开始
+          thinkingStart = Date.now();
+          if (!thinkingMsgId) {
+            // 首次思考: 发 "💭 思考中..."
+            thinkingMsgId = await this.feishu.sendThinking(source);
           }
-          await this.feishu.sendToolRunning(source, `🔧 **${evt.toolName}**: ${evt.detail}`);  // 🔧 + Typing
+          // 非首次: 不发新消息，沿用已有的
+
+        } else if (evt.type === "tool_start") {
+          // 思考结束 → 编辑思考消息带耗时
+          if (thinkingMsgId && thinkingStart) {
+            await this.feishu.editThinkingDone(thinkingMsgId, Date.now() - thinkingStart);
+          }
+          // 工具开始
+          toolStart = Date.now();
+          toolText = `🔧 **${evt.toolName}**: ${evt.detail}`;
+          toolMsgId = await this.feishu.sendToolRunning(source, toolText);
+
+        } else if (evt.type === "tool_end") {
+          // 工具结束 → 编辑工具消息带耗时
+          if (toolMsgId && toolStart) {
+            const elapsed = ((Date.now() - toolStart) / 1000).toFixed(1);
+            await this.feishu.editText(toolMsgId, `${toolText} (${elapsed}s)`);
+          }
+          toolMsgId = undefined;
         }
       },
       onDone: async () => {
-        console.log(`[完成] AI 回复长度: ${replyContent.length} 字符`);
-        if (replyContent) {
-          await this.feishu.replyWithDONE(source, replyContent);  // AI 内容 + DONE
+        // 最后一段思考的耗时
+        if (thinkingMsgId && thinkingStart) {
+          await this.feishu.editThinkingDone(thinkingMsgId, Date.now() - thinkingStart);
         }
+        const totalSec = ((Date.now() - totalStart) / 1000).toFixed(1);
+        const finalText = replyContent
+          ? replyContent + `\n\n⏱ ${totalSec}s`
+          : `完成 (⏱ ${totalSec}s)`;
+        await this.feishu.replyWithDONE(source, finalText);
       },
       onError: async (err: string) => {
-        console.error(`[错误] ${err}`);
+        if (thinkingMsgId && thinkingStart) {
+          await this.feishu.editThinkingDone(thinkingMsgId, Date.now() - thinkingStart);
+        }
+        const totalSec = ((Date.now() - totalStart) / 1000).toFixed(1);
         const finalText = replyContent
-          ? replyContent + `\n\n---\n❌ ${err}`
-          : `❌ ${err}`;
-        await this.feishu.replyWithClownFace(source, finalText);  // 内容 + ClownFace
+          ? replyContent + `\n\n---\n❌ ${err}\n⏱ ${totalSec}s`
+          : `❌ ${err} (⏱ ${totalSec}s)`;
+        await this.feishu.replyWithClownFace(source, finalText);
       },
     });
   }
@@ -114,7 +137,6 @@ export class BridgeServer {
         const session = await this.sessionManager.getSession();
         if (session.isStreaming) {
           session.abort();
-          // 给 LLM 一点时间处理 abort
           setTimeout(async () => {
             await this.feishu.replyMarkdown(source, "⏹️ 已中止 LLM 生成");
           }, 100);
