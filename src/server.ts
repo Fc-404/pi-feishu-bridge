@@ -145,8 +145,9 @@ export class BridgeServer {
       return;
     }
 
-    // 👀 开始处理提示
+    // 👀 开始处理：表情反应 + 文本
     console.log(`[发送] 正在发送给 LLM: ${text.slice(0, 60)}`);
+    await this.feishu.reactProcessing(source.messageId);
     await this.feishu.replyProcessing(source);
 
     // 收集 AI 回复
@@ -156,8 +157,7 @@ export class BridgeServer {
       onDelta: (delta: string) => { replyContent += delta; },
       onToolEvent: async (evt) => {
         if (evt.type === "tool_start") {
-          const icon = evt.toolName === "💭" ? "💭" : "🔧";
-          await this.feishu.replyMarkdown(source, `${icon} **${evt.toolName}**: ${evt.detail}`);
+          await this.feishu.replyMarkdown(source, `🔧 **${evt.toolName}**: ${evt.detail}`);
         }
       },
       onDone: async () => {
@@ -166,6 +166,9 @@ export class BridgeServer {
         if (replyContent) {
           await this.feishu.replyMarkdown(source, replyContent);
         }
+
+        // 换表情：👀 → 👏
+        await this.feishu.reactDone(source.messageId);
 
         // 用量统计
         const stats = this.sessionManager.getUsageStats();
@@ -184,6 +187,8 @@ export class BridgeServer {
       },
       onError: async (err: string) => {
         console.error(`[错误] ${err}`);
+        // 换表情：👀 → 😢
+        await this.feishu.reactError(source.messageId);
         if (replyContent) {
           await this.feishu.replyMarkdown(source, replyContent + `\n\n---\n❌ ${err}`);
         } else {

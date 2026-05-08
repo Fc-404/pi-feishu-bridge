@@ -40,6 +40,7 @@ export class FeishuClient {
       appSecret: this.config.feishuAppSecret,
       loggerLevel: this.config.logLevel === "debug" ? 0 : 1,
       policy: { requireMention: true },
+      safety: { chatQueue: { enabled: false } },
     });
 
     this.channel.on("message", async (msg: NormalizedMessage) => {
@@ -72,7 +73,26 @@ export class FeishuClient {
     console.log("[飞书] WebSocket 事件订阅已连接");
   }
 
-  // ─── 状态标记（用简短文本回复，关联到原消息） ─────────
+  // ─── 飞书表情反应（Emoji Reaction） ───────────────────
+
+  /** 在用户消息上加 👀（处理中） */
+  async reactProcessing(messageId: string): Promise<void> {
+    try { await this.channel.addReaction(messageId, "EYES"); } catch {}
+  }
+
+  /** 替换用户消息表情：👀 → 👏（完成） */
+  async reactDone(messageId: string): Promise<void> {
+    try { await this.channel.removeReactionByEmoji(messageId, "EYES"); } catch {}
+    try { await this.channel.addReaction(messageId, "CLAP"); } catch {}
+  }
+
+  /** 替换用户消息表情：👀 → 😢（错误） */
+  async reactError(messageId: string): Promise<void> {
+    try { await this.channel.removeReactionByEmoji(messageId, "EYES"); } catch {}
+    try { await this.channel.addReaction(messageId, "CRY"); } catch {}
+  }
+
+  // ─── 文本回复（状态标记） ───────────────────────────────
 
   /** 回复处理中提示 */
   async replyProcessing(source: FeishuSource): Promise<void> {

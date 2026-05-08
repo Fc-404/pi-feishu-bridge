@@ -169,14 +169,6 @@ export class PiSessionManager {
           break;
         }
 
-        case "turn_start":
-          onToolEvent?.({ type: "tool_start", toolName: "💭", detail: "LLM 正在思考分析..." });
-          break;
-
-        case "turn_end":
-          onToolEvent?.({ type: "tool_end", toolName: "💭", detail: "" });
-          break;
-
         case "agent_end":
           finished = true;
           unsub();
