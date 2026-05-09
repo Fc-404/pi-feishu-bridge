@@ -124,7 +124,6 @@ export class BridgeServer {
 
     await this.sessionManager.prompt(text, {
       onThinking: (thinking: string) => {
-        // 思考内容推送到 live
         pushLive(liveSession, "thinking", thinking);
       },
       onDelta: (delta: string) => {

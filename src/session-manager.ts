@@ -140,31 +140,62 @@ export class PiSessionManager {
           session.abort();
           onError(`⏱️ 任务已空闲 ${(this.config.timeout / 1000).toFixed(0)} 秒无响应，已中止。可发送 /new 重建会话`);
         }
-      }, this.config.timeout + 100); // 多等一小会儿确保空闲检测准确
+      }, this.config.timeout + 100);
     };
 
     resetIdleTimer();
 
+    // Delta 批处理：积累 delta，定期刷新
+    let deltaBuffer = "";
+    let deltaFlushTimer: ReturnType<typeof setTimeout> | null = null;
+    const flushDelta = () => {
+      if (deltaBuffer) {
+        onDelta(deltaBuffer);
+        deltaBuffer = "";
+      }
+    };
+    const scheduleFlush = () => {
+      if (deltaFlushTimer) clearTimeout(deltaFlushTimer);
+      deltaFlushTimer = setTimeout(flushDelta, 500); // 每 500ms 刷新一次
+    };
+
     const unsub = session.subscribe((event) => {
       if (finished) return;
-      resetIdleTimer(); // 任何事件都重置空闲计时器
+      resetIdleTimer();
 
       switch (event.type) {
-        case "message_update":
-          // 首次 text_delta 时捕获思考内容
-          if (!thinkingCaptured && onThinking && "assistantMessageEvent" in event) {
-            thinkingCaptured = true;
+        case "message_start": {
+          // 消息开始时，尝试捕获思考内容
+          if (!thinkingCaptured && onThinking) {
             const msg = (event as any).message;
             if (msg?.content && Array.isArray(msg.content)) {
               const thinkBlock = msg.content.find((c: any) => c.type === "thinking");
               if (thinkBlock?.thinking) {
+                thinkingCaptured = true;
                 onThinking(thinkBlock.thinking);
               }
             }
           }
+          break;
+        }
+
+        case "message_update":
+          // 尝试捕获思考内容（message_start 没抓到的话）
+          if (!thinkingCaptured && onThinking) {
+            const msg = (event as any).message;
+            if (msg?.content && Array.isArray(msg.content)) {
+              const thinkBlock = msg.content.find((c: any) => c.type === "thinking");
+              if (thinkBlock?.thinking) {
+                thinkingCaptured = true;
+                onThinking(thinkBlock.thinking);
+              }
+            }
+          }
+          // 累积 delta 而非立即推送
           if ("assistantMessageEvent" in event &&
               event.assistantMessageEvent?.type === "text_delta") {
-            onDelta(event.assistantMessageEvent.delta);
+            deltaBuffer += event.assistantMessageEvent.delta;
+            scheduleFlush();
           }
           break;
 
@@ -196,8 +227,16 @@ export class PiSessionManager {
           if ("messages" in event) {
             this.lastMessages = (event as any).messages;
           }
+          flushDelta();
+          if (deltaFlushTimer) clearTimeout(deltaFlushTimer);
           onDone();
           return;
+        case "turn_end":
+          flushDelta();
+          break;
+        case "agent_start":
+          flushDelta();
+          break;
       }
     });
 
@@ -206,6 +245,8 @@ export class PiSessionManager {
       finished = true;
       unsub();
       if (idleTimer) clearTimeout(idleTimer);
+      if (deltaFlushTimer) clearTimeout(deltaFlushTimer);
+      flushDelta();
       this.isProcessing = false;
       session.abort();
     };
