@@ -128,7 +128,7 @@ export class BridgeServer {
       },
       onDelta: (delta: string) => {
         replyContent += delta;
-        pushLive(liveSession, "delta", delta);
+        // delta 不推 live，避免碎片化和重复
       },
       onToolEvent: async (evt: { type: string; toolName: string; detail: string }) => {
         if (evt.type === "tool_start") {

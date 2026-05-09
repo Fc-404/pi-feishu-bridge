@@ -117,7 +117,7 @@ export class PiSessionManager {
     const session = await this.getSession();
     const { onDelta, onThinking, onToolEvent, onDone, onError } = callbacks;
     let finished = false;
-    let thinkingCaptured = false;
+    let lastThinkingLen = 0;
 
     this.isProcessing = true;
     this.processingStartTime = Date.now();
@@ -145,6 +145,9 @@ export class PiSessionManager {
 
     resetIdleTimer();
 
+    // 记录最新思考内容，只在 agent_end 时推送一次完整内容
+    let latestThinking = "";
+
     // Delta 批处理：积累 delta，定期刷新
     let deltaBuffer = "";
     let deltaFlushTimer: ReturnType<typeof setTimeout> | null = null;
@@ -165,33 +168,19 @@ export class PiSessionManager {
 
       switch (event.type) {
         case "message_start": {
-          // 消息开始时，尝试捕获思考内容
-          if (!thinkingCaptured && onThinking) {
-            const msg = (event as any).message;
-            if (msg?.content && Array.isArray(msg.content)) {
-              const thinkBlock = msg.content.find((c: any) => c.type === "thinking");
-              if (thinkBlock?.thinking) {
-                thinkingCaptured = true;
-                onThinking(thinkBlock.thinking);
-              }
-            }
-          }
           break;
         }
 
         case "message_update":
-          // 尝试捕获思考内容（message_start 没抓到的话）
-          if (!thinkingCaptured && onThinking) {
+          // 持续记录最新思考内容，但不实时推送（避免 SSE 重复/闪现问题）
+          if (onThinking && (event as any).message?.content) {
             const msg = (event as any).message;
-            if (msg?.content && Array.isArray(msg.content)) {
-              const thinkBlock = msg.content.find((c: any) => c.type === "thinking");
-              if (thinkBlock?.thinking) {
-                thinkingCaptured = true;
-                onThinking(thinkBlock.thinking);
-              }
+            const thinkBlock = msg.content.find((c: any) => c.type === "thinking");
+            if (thinkBlock?.thinking && thinkBlock.thinking.length > lastThinkingLen) {
+              lastThinkingLen = thinkBlock.thinking.length;
+              latestThinking = thinkBlock.thinking;
             }
           }
-          // 累积 delta 而非立即推送
           if ("assistantMessageEvent" in event &&
               event.assistantMessageEvent?.type === "text_delta") {
             deltaBuffer += event.assistantMessageEvent.delta;
@@ -226,6 +215,10 @@ export class PiSessionManager {
           this.currentTool = "";
           if ("messages" in event) {
             this.lastMessages = (event as any).messages;
+          }
+          // 一轮结束时推送一次完整的思考内容
+          if (latestThinking && onThinking) {
+            onThinking(latestThinking);
           }
           flushDelta();
           if (deltaFlushTimer) clearTimeout(deltaFlushTimer);
