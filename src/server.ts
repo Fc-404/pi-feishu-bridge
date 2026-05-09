@@ -8,6 +8,16 @@ import { PiSessionManager } from "./session-manager.js";
 import type { BridgeConfig } from "./config.js";
 import type { FeishuSource } from "./types.js";
 
+/** 报告服务地址 */
+const REPORT_SERVER = process.env.REPORT_SERVER_URL || "http://127.0.0.1:9779";
+const API_KEY = process.env.REPORT_SERVER_API_KEY || "report-push-key-2024";
+
+/** 直播会话信息 */
+interface LiveSession {
+  sessionId: string;
+  url: string;
+}
+
 /** 格式化 token 数量 */
 function fmt(n: number): string {
   if (n >= 1_000_000) return (n / 1_000_000).toFixed(1) + "M";
@@ -21,6 +31,39 @@ function fmtCost(n: number): string {
   if (n >= 1) return n.toFixed(3);
   if (n === 0) return "0";
   return n.toFixed(4);
+}
+
+// ─── 直播会话辅助 ────────────────────────────────────────
+
+/** 频率限制：同一 live session 每秒最多推送 N 次 */
+const liveThrottleMs = 300;
+const liveLastPush: Map<string, number> = new Map();
+
+async function pushLive(live: LiveSession | null, type: string, content: string) {
+  if (!live) return;
+  const now = Date.now();
+  const last = liveLastPush.get(live.sessionId) || 0;
+  if (now - last < liveThrottleMs) return;
+  liveLastPush.set(live.sessionId, now);
+
+  try {
+    await fetch(`${REPORT_SERVER}/api/live/${live.sessionId}/append`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${API_KEY}` },
+      body: JSON.stringify({ type, content }),
+    });
+  } catch {}
+}
+
+async function liveDone(live: LiveSession | null, totalSec: string, finalContent: string, isError: boolean) {
+  if (!live) return;
+  try {
+    await fetch(`${REPORT_SERVER}/api/live/${live.sessionId}/done`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${API_KEY}` },
+      body: JSON.stringify({ total_time: parseFloat(totalSec), final_content: finalContent, error: isError }),
+    });
+  } catch {}
 }
 
 export class BridgeServer {
@@ -63,33 +106,50 @@ export class BridgeServer {
     let toolMsgId: string | undefined;
     let toolText = "";
     let replyContent = "";
+    let liveSession: LiveSession | null = null;
 
     await this.feishu.reactGet(source);
 
+    // ─── 创建直播会话 ─────────────────────────────────
+    try {
+      const resp = await fetch(`${REPORT_SERVER}/api/live/create`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${API_KEY}` },
+        body: JSON.stringify({ title: "LLM 实时进度" }),
+      });
+      if (resp.ok) {
+        const data = await resp.json();
+        liveSession = { sessionId: data.session_id, url: data.url };
+      }
+    } catch {}
+
+    if (liveSession) {
+      // 发链接给用户 + StatusFlashOfInspiration 反应
+      await this.feishu.replyMarkdown(source, `📡 实时进度: ${liveSession.url}`);
+    }
+
     await this.sessionManager.prompt(text, {
-      onDelta: (delta: string) => { replyContent += delta; },
+      onDelta: (delta: string) => {
+        replyContent += delta;
+        // 实时推送 delta（限制频率，每 500ms 最多推一次）
+        pushLive(liveSession, "delta", delta);
+      },
       onToolEvent: async (evt: { type: string; toolName: string; detail: string }) => {
         if (evt.type === "thinking") {
-          // 新思考轮次开始
           thinkingStart = Date.now();
+          pushLive(liveSession, "thinking", `正在思考分析...`);
           if (!thinkingMsgId) {
-            // 首次思考: 发 "💭 思考中..."
             thinkingMsgId = await this.feishu.sendThinking(source);
           }
-          // 非首次: 不发新消息，沿用已有的
-
         } else if (evt.type === "tool_start") {
-          // 思考结束 → 编辑思考消息带耗时
           if (thinkingMsgId && thinkingStart) {
             await this.feishu.editThinkingDone(thinkingMsgId, Date.now() - thinkingStart);
           }
-          // 工具开始
           toolStart = Date.now();
           toolText = `🔧 **${evt.toolName}**: ${evt.detail}`;
           toolMsgId = await this.feishu.sendToolRunning(source, toolText);
-
+          pushLive(liveSession, "tool", `${evt.toolName}: ${evt.detail}`);
         } else if (evt.type === "tool_end") {
-          // 工具结束 → 编辑工具消息带耗时
           if (toolMsgId && toolStart) {
             const elapsed = ((Date.now() - toolStart) / 1000).toFixed(1);
             await this.feishu.editText(toolMsgId, `${toolText} (${elapsed}s)`);
@@ -98,7 +158,6 @@ export class BridgeServer {
         }
       },
       onDone: async () => {
-        // 最后一段思考的耗时
         if (thinkingMsgId && thinkingStart) {
           await this.feishu.editThinkingDone(thinkingMsgId, Date.now() - thinkingStart);
         }
@@ -107,6 +166,8 @@ export class BridgeServer {
           ? replyContent + `\n\n⏱ ${totalSec}s`
           : `完成 (⏱ ${totalSec}s)`;
         await this.feishu.replyWithDONE(source, finalText);
+        // 标记直播完成
+        await liveDone(liveSession, totalSec, finalText, false);
       },
       onError: async (err: string) => {
         if (thinkingMsgId && thinkingStart) {
@@ -117,6 +178,8 @@ export class BridgeServer {
           ? replyContent + `\n\n---\n❌ ${err}\n⏱ ${totalSec}s`
           : `❌ ${err} (⏱ ${totalSec}s)`;
         await this.feishu.replyWithClownFace(source, finalText);
+        // 标记直播完成（错误）
+        await liveDone(liveSession, totalSec, finalText, true);
       },
     });
   }
