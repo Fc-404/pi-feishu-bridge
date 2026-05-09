@@ -106,6 +106,8 @@ export class PiSessionManager {
     text: string,
     callbacks: {
       onDelta: (delta: string) => void;
+      /** 思考内容流（模型内部推理） */
+      onThinking?: (text: string) => void;
       /** 工具执行事件: start/end/thinking, 参数 toolName, args/result */
       onToolEvent?: (event: { type: "tool_start" | "tool_end" | "thinking"; toolName: string; detail: string }) => void;
       onDone: () => void;
@@ -113,8 +115,9 @@ export class PiSessionManager {
     },
   ): Promise<{ abort: () => void }> {
     const session = await this.getSession();
-    const { onDelta, onToolEvent, onDone, onError } = callbacks;
+    const { onDelta, onThinking, onToolEvent, onDone, onError } = callbacks;
     let finished = false;
+    let thinkingCaptured = false;
 
     this.isProcessing = true;
     this.processingStartTime = Date.now();
@@ -148,6 +151,17 @@ export class PiSessionManager {
 
       switch (event.type) {
         case "message_update":
+          // 首次 text_delta 时捕获思考内容
+          if (!thinkingCaptured && onThinking && "assistantMessageEvent" in event) {
+            thinkingCaptured = true;
+            const msg = (event as any).message;
+            if (msg?.content && Array.isArray(msg.content)) {
+              const thinkBlock = msg.content.find((c: any) => c.type === "thinking");
+              if (thinkBlock?.thinking) {
+                onThinking(thinkBlock.thinking);
+              }
+            }
+          }
           if ("assistantMessageEvent" in event &&
               event.assistantMessageEvent?.type === "text_delta") {
             onDelta(event.assistantMessageEvent.delta);
